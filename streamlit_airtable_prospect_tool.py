@@ -118,7 +118,7 @@ if uploaded_file:
                         try:
                             prospect_table.create({
                                 "Domain": domain,
-                                "Date Added": today,
+                                "Date": today,
                                 "Added By Name": user_name,
                                 "Added By Email": user_email
                             })
