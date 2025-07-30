@@ -23,8 +23,8 @@ PROSPECT_TABLE_NAME = "Prospect"
 
 # Connect to Airtable tables
 try:
-    backlink_table = Table(AIRTABLE_TOKEN, BACKLINK_BASE_ID, Database)
-    prospect_table = Table(AIRTABLE_TOKEN, PROSPECT_BASE_ID, Prospect)
+    backlink_table = Table(AIRTABLE_TOKEN, BACKLINK_BASE_ID, BACKLINK_TABLE_NAME)
+    prospect_table = Table(AIRTABLE_TOKEN, PROSPECT_BASE_ID, PROSPECT_TABLE_NAME)
 except Exception as e:
     st.error(f"❌ Failed to initialize Airtable tables: {e}")
     st.stop()
