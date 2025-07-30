@@ -19,7 +19,7 @@ if not AIRTABLE_TOKEN:
 api = Api(AIRTABLE_TOKEN)
 
 # Airtable Base IDs and Table IDs
-BACKLINK_BASE_ID = "appprZEmIUaqjzuurQ"
+BACKLINK_BASE_ID = "apprZEmIUaqjzuurQ"
 BACKLINK_TABLE_ID = "tbliCOQZY9RICLsLP"  # Replace with your real Backlink Table ID
 
 PROSPECT_BASE_ID = "appHdhjsWVRxaCvcR"
