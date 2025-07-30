@@ -1,4 +1,4 @@
-# Prospect Filtering & Airtable Sync Tool (Table ID Version)
+# Prospect Filtering & Airtable Sync Tool
 
 This Streamlit app allows you to upload a list of prospect domains, compare them against two Airtable databases (Backlink & Prospecting),
 and identify domains that are **safe to outreach**.
