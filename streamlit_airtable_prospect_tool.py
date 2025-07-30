@@ -17,9 +17,9 @@ if not AIRTABLE_TOKEN:
 
 # Airtable configuration (from screenshots)
 BACKLINK_BASE_ID = "appprZEmIUaqjzuurQ"
-BACKLINK_TABLE_NAME = "Imported table"
+BACKLINK_TABLE_NAME = "Database"
 PROSPECT_BASE_ID = "appHdhjsWVRxaCvcR"
-PROSPECT_TABLE_NAME = "Imported table"
+PROSPECT_TABLE_NAME = "Prospect"
 
 # Connect to Airtable tables
 try:
