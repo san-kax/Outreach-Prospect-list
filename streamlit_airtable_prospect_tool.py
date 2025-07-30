@@ -43,12 +43,6 @@ if not user_name or not user_email:
 # --- File Upload ---
 uploaded_file = st.file_uploader("Upload your prospect domains (CSV/Excel)", type=["csv", "xlsx"])
 
-# Session state to prevent duplicate pushes
-if "pushed" not in st.session_state:
-    st.session_state.pushed = False
-if "confirm_push" not in st.session_state:
-    st.session_state.confirm_push = False
-
 if uploaded_file:
     # Read file
     df_new = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
@@ -60,6 +54,7 @@ if uploaded_file:
         # Normalize domains (lowercase, remove www)
         new_domains = (
             df_new['Domain']
+            .astype(str)
             .str.strip()
             .str.lower()
             .str.replace(r"^www\.", "", regex=True)
@@ -93,7 +88,7 @@ if uploaded_file:
 
         # Combine and filter
         all_existing = backlink_domains.union(prospect_domains)
-        new_to_outreach = [d for d in new_domains if d not in all_existing]
+        new_to_outreach = [d for d in new_domains if d and d not in all_existing]
 
         # Show results
         st.success(f"✅ {len(new_to_outreach)} new domains found that are safe to outreach.")
@@ -101,32 +96,29 @@ if uploaded_file:
         st.dataframe(df_result)
 
         # Download CSV
-        st.download_button("⬇️ Download CSV", df_result.to_csv(index=False), "outreach_candidates.csv")
+        st.download_button("⬇️ Download Prospect List (CSV)", df_result.to_csv(index=False), "prospects.csv")
 
-        # --- Push to Airtable ---
-        if len(new_to_outreach) > 0 and not st.session_state.pushed:
-            if not st.session_state.confirm_push:
-                if st.button("📤 Push New Domains to Airtable"):
-                    st.session_state.confirm_push = True
-                    st.warning("⚠️ Please confirm: Are you sure you want to push these domains to Airtable?")
-            elif st.session_state.confirm_push:
-                if st.button("✅ Confirm Push to Airtable"):
-                    added_count = 0
-                    today = datetime.now().strftime("%Y-%m-%d")
+        # --- Single Push Button with Clear Instruction ---
+        if len(new_to_outreach) > 0:
+            st.write("If you want to push these prospects to the Prospect Airtable, click the button below.")
 
-                    for domain in new_to_outreach:
-                        try:
-                            prospect_table.create({
-                                "Domain": domain,
-                                "Date": today,
-                                "Added By Name": user_name,
-                                "Added By Email": user_email
-                            })
-                            added_count += 1
-                        except Exception as e:
-                            st.error(f"❌ Failed to add {domain}: {e}")
+            if st.button("📤 Push These Prospects to Airtable"):
+                added_count = 0
+                today = datetime.now().strftime("%Y-%m-%d")
 
-                    st.success(f"🎉 Successfully added {added_count} new domains to Prospecting Airtable!")
-                    st.session_state.pushed = True
-        elif st.session_state.pushed:
-            st.info("✅ Domains have already been pushed to Airtable in this session.")
+                for domain in new_to_outreach:
+                    domain = str(domain).strip()
+                    if not domain:  # Skip empty strings
+                        continue
+                    try:
+                        prospect_table.create({
+                            "Domain": domain,
+                            "Date": today,
+                            "Added By Name": user_name,
+                            "Added By Email": user_email
+                        })
+                        added_count += 1
+                    except Exception as e:
+                        st.error(f"❌ Failed to add {domain}: {e}")
+
+                st.success(f"🎉 Successfully added {added_count} new domains to Prospecting Airtable!")
