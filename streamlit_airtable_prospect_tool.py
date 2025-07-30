@@ -29,7 +29,7 @@ PROSPECT_TABLE_ID = "tbliCOQZY9RICLsLP"  # Verified Prospect Table ID
 backlink_table = api.base(BACKLINK_BASE_ID).table(BACKLINK_TABLE_ID)
 prospect_table = api.base(PROSPECT_BASE_ID).table(PROSPECT_TABLE_ID)
 
-st.title("🔗 Prospect Filtering & Airtable Sync Tool (Table ID Version)")
+st.title("🔗 Prospect Filtering & Airtable Sync Tool")
 
 # --- User Authentication ---
 st.subheader("👤 User Info")
