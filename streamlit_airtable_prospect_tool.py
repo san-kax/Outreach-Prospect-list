@@ -1,3 +1,5 @@
+# streamlit_airtable_prospect_tool.py
+
 import os
 import re
 import time
@@ -9,7 +11,6 @@ from typing import Iterable
 import streamlit as st
 import pandas as pd
 from pyairtable import Api
-from pyairtable.api.types import AirtableError
 
 # ---------------- Config ----------------
 logging.basicConfig(level=logging.INFO)
@@ -23,37 +24,48 @@ api = Api(AIRTABLE_TOKEN)
 
 # Your 4 bases/tables (from the URLs you shared)
 SOURCES = [
-    {"label": "Base A", "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP"},
-    {"label": "Base B", "base_id": "apprZEmIUaqjzuurQ", "table_id": "tbliCOQZY9RICLsLP"},
-    {"label": "Base C", "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4"},
-    {"label": "Base D", "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F"},
+    {"label": "Prospect (A)",        "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP"},
+    {"label": "Backlinks (B)",       "base_id": "apprZEmIUaqjzuurQ", "table_id": "tbliCOQZY9RICLsLP"},
+    {"label": "Whichbingo.co.uk (C)","base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4"},
+    {"label": "Database (D)",        "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F"},
 ]
 
 # --------------- Helpers ---------------
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
 
 def normalize_domain(raw: str) -> str | None:
-    """Lowercase, strip proto/path, drop 'www.', IDN->punycode, sanity checks."""
-    import idna
+    """
+    Lowercase, strip protocol/path/query/fragment, drop leading 'www.',
+    convert IDN -> punycode, and validate shape.
+    """
+    import idna  # lightweight; keep import local to avoid import if unused
     if not isinstance(raw, str):
         return None
     s = raw.strip().lower()
     if not s:
         return None
+
+    # Handle pasted URLs
     if "://" in s:
         s = urlparse(s).netloc or s
     s = s.split("/")[0].split("?")[0].split("#")[0]
+
     s = s.rstrip(".")
     if s.startswith("www."):
         s = s[4:]
+
     if not s or "." not in s:
         return None
+
+    # IDN -> punycode (ASCII)
     try:
         s = idna.encode(s).decode("ascii")
-    except idna.IDNAError:
+    except Exception:
         return None
+
     if not DOMAIN_RE.match(s):
         return None
+
     return s
 
 def chunked(iterable: Iterable, n: int = 10):
@@ -67,6 +79,10 @@ def chunked(iterable: Iterable, n: int = 10):
         yield buf
 
 def batch_create_domains(table, domains, user_name, user_email, date_str):
+    """
+    Create records in batches of 10 with simple exponential backoff for rate limits.
+    Catches generic Exception to be compatible across pyairtable versions.
+    """
     created = 0
     for batch in chunked(domains, 10):
         records = [{"fields": {
@@ -75,15 +91,16 @@ def batch_create_domains(table, domains, user_name, user_email, date_str):
             "Added By Name": user_name,
             "Added By Email": user_email
         }} for d in batch]
+
         for attempt in range(3):
             try:
                 table.batch_create(records)
                 created += len(records)
                 break
-            except AirtableError as e:
+            except Exception as e:  # keep generic; some versions don't expose a public ApiError
                 msg = str(e).lower()
                 if ("rate limit" in msg or "429" in msg) and attempt < 2:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2 ** attempt)  # 1s, 2s
                     continue
                 else:
                     raise
@@ -91,10 +108,12 @@ def batch_create_domains(table, domains, user_name, user_email, date_str):
 
 @st.cache_data(ttl=120)
 def fetch_existing_domains(selected_sources: list[dict]) -> set[str]:
+    """Read 'Domain' from all selected bases/tables and return a unified normalized set."""
     all_domains: set[str] = set()
     for src in selected_sources:
         table = api.base(src["base_id"]).table(src["table_id"])
-        records = table.all(fields=["Domain"])  # faster than .all()
+        # Pull only the needed field for speed
+        records = table.all(fields=["Domain"])
         for r in records:
             d = normalize_domain(r.get("fields", {}).get("Domain", ""))
             if d:
@@ -103,6 +122,7 @@ def fetch_existing_domains(selected_sources: list[dict]) -> set[str]:
 
 # ---------------- UI ----------------
 st.title("🔗 Prospect Filtering & Airtable Sync (4 databases)")
+st.caption("De-dupes against selected Airtable tables, then pushes to the target table you choose.")
 
 st.subheader("👤 User")
 user_name  = st.text_input("Your name:")
@@ -116,7 +136,8 @@ options = [f'{s["label"]} ({s["base_id"]}:{s["table_id"]})' for s in SOURCES]
 selected_labels = st.multiselect(
     "Select Airtable sources to check for existing domains",
     options=options,
-    default=options
+    default=options,
+    help="These tables will be scanned to remove duplicates before pushing."
 )
 active_sources = [s for s, lbl in zip(SOURCES, options) if lbl in selected_labels]
 
@@ -133,7 +154,7 @@ uploaded_file = st.file_uploader("Upload your prospect domains (CSV/Excel)", typ
 if not uploaded_file:
     st.stop()
 
-# Read file
+# ---------- Read and normalize upload ----------
 with st.spinner("Reading file..."):
     if uploaded_file.name.endswith(".csv"):
         df_new = pd.read_csv(uploaded_file, dtype=str)
@@ -144,17 +165,17 @@ if "Domain" not in df_new.columns:
     st.error("Your file must have a 'Domain' column.")
     st.stop()
 
-# Normalize uploaded domains
 raw = df_new["Domain"].dropna().astype(str).tolist()
 new_domains = {d for d in (normalize_domain(x) for x in raw) if d}
+
 st.write(f"📥 Uploaded rows: **{len(raw)}** | After normalization: **{len(new_domains)}**")
 
-# Pull existing domains from the selected sources
+# ---------- Fetch existing across selected sources ----------
 with st.spinner("Fetching existing domains from Airtable..."):
     existing = fetch_existing_domains(active_sources)
 st.info(f"📚 Existing domains across selected sources: **{len(existing)}**")
 
-# Diff
+# ---------- Diff ----------
 new_to_outreach = sorted(d for d in new_domains if d not in existing)
 st.success(f"✅ {len(new_to_outreach)} new domains safe to outreach.")
 
@@ -162,7 +183,7 @@ df_result = pd.DataFrame({"Domain": new_to_outreach})
 st.dataframe(df_result, use_container_width=True)
 st.download_button("⬇️ Download Prospects (CSV)", df_result.to_csv(index=False), "prospects.csv")
 
-# Push
+# ---------- Push ----------
 if new_to_outreach:
     if "pushed" not in st.session_state:
         st.session_state.pushed = False
