@@ -44,10 +44,7 @@ push_table = api.base(PUSH_BASE_ID).table(PUSH_TABLE_ID)
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
 
 def normalize_domain(raw: str) -> str | None:
-    """
-    Lowercase, strip protocol/path/query/fragment, drop leading 'www.',
-    convert IDN -> punycode, and validate shape.
-    """
+    """Lowercase, strip protocol/path/query/fragment, drop 'www.', IDN→punycode, basic validation."""
     import idna
     if not isinstance(raw, str):
         return None
@@ -80,6 +77,31 @@ def chunked(iterable: Iterable, n: int = 10):
     if buf:
         yield buf
 
+def read_uploaded_table(uploaded_file) -> pd.DataFrame:
+    """Robust reader for CSV/XLSX/XLS/XLSM with friendly errors."""
+    name = uploaded_file.name.lower()
+    try:
+        if name.endswith(".csv"):
+            return pd.read_csv(uploaded_file, dtype=str)
+        elif name.endswith((".xlsx", ".xlsm", ".xltx", ".xltm")):
+            # Requires openpyxl
+            return pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
+        elif name.endswith(".xls"):
+            # Old Excel format needs xlrd
+            return pd.read_excel(uploaded_file, dtype=str, engine="xlrd")
+        else:
+            st.error("Unsupported file type. Please upload a CSV or Excel file.")
+            st.stop()
+    except ImportError as e:
+        msg = str(e).lower()
+        if "openpyxl" in msg:
+            st.error("Excel reading requires **openpyxl**. Add `openpyxl>=3.1.2` to requirements.txt or upload a CSV.")
+        elif "xlrd" in msg:
+            st.error("Legacy .xls reading requires **xlrd**. Add `xlrd>=2.0.1` to requirements.txt or upload a CSV.")
+        else:
+            st.error(f"Missing dependency while reading your file: {e}")
+        st.stop()
+
 @st.cache_data(ttl=120)
 def fetch_existing_domains(selected_sources: list[dict]) -> set[str]:
     """Read 'Domain' from all selected bases/tables and return a unified normalized set."""
@@ -98,10 +120,7 @@ def _escape_for_formula(val: str) -> str:
     return val.replace("'", "\\'")
 
 def domain_exists_in_prospect(domain_norm: str) -> bool:
-    """
-    Guard check in the push target (Prospect-Data).
-    Uses a case-insensitive formula: LOWER({Domain}) = 'example.com'
-    """
+    """Guard check in the push target (Prospect-Data)."""
     try:
         formula = f"LOWER({{Domain}}) = '{_escape_for_formula(domain_norm.lower())}'"
         recs = push_table.all(formula=formula, max_records=1, fields=["Domain"])
@@ -135,16 +154,16 @@ selected_labels = st.multiselect(
 )
 active_sources = [prospect_source] + [s for s, lbl in zip(other_sources, options) if lbl in selected_labels]
 
-uploaded_file = st.file_uploader("Upload your prospect domains (CSV/Excel)", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader(
+    "Upload your prospect domains (CSV/Excel)",
+    type=["csv", "xlsx", "xls", "xlsm"]
+)
 if not uploaded_file:
     st.stop()
 
 # ---------- Read and normalize upload ----------
 with st.spinner("Reading file..."):
-    if uploaded_file.name.endswith(".csv"):
-        df_new = pd.read_csv(uploaded_file, dtype=str)
-    else:
-        df_new = pd.read_excel(uploaded_file, dtype=str)
+    df_new = read_uploaded_table(uploaded_file)
 
 if "Domain" not in df_new.columns:
     st.error("Your file must have a 'Domain' column.")
@@ -198,8 +217,7 @@ if new_to_outreach:
                         "Added By Email": user_email
                     })
                     created += 1
-                    # tiny pacing helps with rate limits under multi-user pushes
-                    time.sleep(0.05)
+                    time.sleep(0.05)  # tiny pacing helps with rate limits
                 except Exception:
                     errors += 1
 
