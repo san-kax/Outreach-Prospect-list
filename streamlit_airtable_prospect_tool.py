@@ -15,20 +15,30 @@ from pyairtable import Api
 # ---------------- Config ----------------
 logging.basicConfig(level=logging.INFO)
 
-AIRTABLE_TOKEN = st.secrets.get("AIRTABLE_TOKEN") or os.getenv("AIRTABLE_TOKEN")
+# Accept either AIRTABLE_TOKEN or airtable_token from secrets/env
+AIRTABLE_TOKEN = (
+    st.secrets.get("AIRTABLE_TOKEN")
+    or st.secrets.get("airtable_token")
+    or os.getenv("AIRTABLE_TOKEN")
+)
 if not AIRTABLE_TOKEN:
-    st.error("❌ Missing Airtable token. Add AIRTABLE_TOKEN in Streamlit secrets or env.")
+    st.error("❌ Missing Airtable token. Add AIRTABLE_TOKEN (or airtable_token) in Streamlit secrets or env.")
     st.stop()
 
 api = Api(AIRTABLE_TOKEN)
 
 # Your 4 bases/tables (from the URLs you shared)
 SOURCES = [
-    {"label": "Prospect (A)",        "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP"},
-    {"label": "Backlinks (B)",       "base_id": "apprZEmIUaqjzuurQ", "table_id": "tbliCOQZY9RICLsLP"},
-    {"label": "Whichbingo.co.uk (C)","base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4"},
-    {"label": "Database (D)",        "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F"},
+    {"label": "Prospect (A)",         "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP"},
+    {"label": "Backlinks (B)",        "base_id": "apprZEmIUaqjzuurQ", "table_id": "tbliCOQZY9RICLsLP"},
+    {"label": "Whichbingo.co.uk (C)", "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4"},
+    {"label": "Database (D)",         "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F"},
 ]
+
+# Fixed push target: Prospect list (first source)
+PUSH_BASE_ID  = SOURCES[0]["base_id"]
+PUSH_TABLE_ID = SOURCES[0]["table_id"]
+push_table = api.base(PUSH_BASE_ID).table(PUSH_TABLE_ID)
 
 # --------------- Helpers ---------------
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
@@ -38,7 +48,7 @@ def normalize_domain(raw: str) -> str | None:
     Lowercase, strip protocol/path/query/fragment, drop leading 'www.',
     convert IDN -> punycode, and validate shape.
     """
-    import idna  # lightweight; keep import local to avoid import if unused
+    import idna  # local import
     if not isinstance(raw, str):
         return None
     s = raw.strip().lower()
@@ -97,7 +107,7 @@ def batch_create_domains(table, domains, user_name, user_email, date_str):
                 table.batch_create(records)
                 created += len(records)
                 break
-            except Exception as e:  # keep generic; some versions don't expose a public ApiError
+            except Exception as e:  # keep generic
                 msg = str(e).lower()
                 if ("rate limit" in msg or "429" in msg) and attempt < 2:
                     time.sleep(2 ** attempt)  # 1s, 2s
@@ -121,8 +131,8 @@ def fetch_existing_domains(selected_sources: list[dict]) -> set[str]:
     return all_domains
 
 # ---------------- UI ----------------
-st.title("🔗 Prospect Filtering & Airtable Sync (4 databases)")
-st.caption("De-dupes against selected Airtable tables, then pushes to the target table you choose.")
+st.title("🔗 Prospect Filtering & Airtable Sync")
+st.caption("De-dupes against selected Airtable tables, then pushes to the **Prospect list** only.")
 
 st.subheader("👤 User")
 user_name  = st.text_input("Your name:")
@@ -131,7 +141,7 @@ if not user_name or not user_email:
     st.warning("⚠️ Please provide your name and email to continue.")
     st.stop()
 
-# Choose which sources to check for duplicates
+# Choose which sources to check for duplicates (push target is fixed to Prospect)
 options = [f'{s["label"]} ({s["base_id"]}:{s["table_id"]})' for s in SOURCES]
 selected_labels = st.multiselect(
     "Select Airtable sources to check for existing domains",
@@ -140,15 +150,6 @@ selected_labels = st.multiselect(
     help="These tables will be scanned to remove duplicates before pushing."
 )
 active_sources = [s for s, lbl in zip(SOURCES, options) if lbl in selected_labels]
-
-# Choose where to push
-push_label = st.selectbox(
-    "Choose the Airtable table to PUSH new prospects to",
-    options=options,
-    index=0
-)
-push_src = [s for s, lbl in zip(SOURCES, options) if lbl == push_label][0]
-push_table = api.base(push_src["base_id"]).table(push_src["table_id"])
 
 uploaded_file = st.file_uploader("Upload your prospect domains (CSV/Excel)", type=["csv", "xlsx"])
 if not uploaded_file:
@@ -183,11 +184,13 @@ df_result = pd.DataFrame({"Domain": new_to_outreach})
 st.dataframe(df_result, use_container_width=True)
 st.download_button("⬇️ Download Prospects (CSV)", df_result.to_csv(index=False), "prospects.csv")
 
-# ---------- Push ----------
+# ---------- Push to Prospect only ----------
 if new_to_outreach:
     if "pushed" not in st.session_state:
         st.session_state.pushed = False
     disabled = st.session_state.pushed
+
+    st.write(f"Target for push → **Prospect list** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
 
     if st.button(f"📤 Push {len(new_to_outreach)} Prospects to Airtable", disabled=disabled):
         with st.spinner("Creating records in Airtable..."):
@@ -201,8 +204,8 @@ if new_to_outreach:
                 )
                 st.session_state.pushed = True
                 st.success(
-                    f"🎉 Added {created} new domains to `{push_src['label']}` "
-                    f"({push_src['base_id']}:{push_src['table_id']})."
+                    f"🎉 Added {created} new domains to **Prospect** "
+                    f"({PUSH_BASE_ID}:{PUSH_TABLE_ID})."
                 )
             except Exception as e:
                 st.error(f"❌ Push failed: {e}")
