@@ -1,5 +1,3 @@
-# streamlit_airtable_prospect_tool.py
-
 import os
 import re
 import time
@@ -28,13 +26,12 @@ if not AIRTABLE_TOKEN:
 api = Api(AIRTABLE_TOKEN)
 
 # Bases/Tables (latest IDs)
-# NOTE: Prospect-Data-1 is first so it is the ALWAYS-checked table and the push target.
 SOURCES = [
-    {"label": "Prospect-Data-1",   "base_id": "appVyliM5boVyoBhf", "table_id": "tbliCOQZY9RICLsLP"},  # ALWAYS checked + push target
-    {"label": "Prospect-Data",     "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP"},
-    {"label": "GDC-Database",      "base_id": "appUoOvkqzJvyyMvC", "table_id": "tbliCOQZY9RICLsLP"},
-    {"label": "WB-Database",       "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4"},
-    {"label": "Freebets-Database", "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F"},
+    {"label": "Prospect-Data-1",     "base_id": "appVyliM5boVyoBhf", "table_id": "tbliCOQZY9RICLsLP"},  # ALWAYS checked + push target
+    {"label": "Prospect-Data",       "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP"},
+    {"label": "GDC-Database",        "base_id": "appUoOvkqzJvyyMvC", "table_id": "tbliCOQZY9RICLsLP"},
+    {"label": "WB-Database",         "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4"},
+    {"label": "Freebets-Database",   "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F"},
 ]
 
 # Fixed push target: ALWAYS push to Prospect-Data-1 (first source)
@@ -118,7 +115,6 @@ def fetch_existing_domains(selected_sources: list[dict]) -> set[str]:
     return all_domains
 
 def _escape_for_formula(val: str) -> str:
-    # Airtable formula strings are single-quoted; escape any single quotes
     return val.replace("'", "\\'")
 
 def domain_exists_in_prospect(domain_norm: str) -> bool:
@@ -128,7 +124,6 @@ def domain_exists_in_prospect(domain_norm: str) -> bool:
         recs = push_table.all(formula=formula, max_records=1, fields=["Domain"])
         return len(recs) > 0
     except Exception:
-        # On any API error, be conservative to avoid duplicates.
         return True
 
 # ---------------- UI ----------------
@@ -197,7 +192,6 @@ if new_to_outreach:
     st.write(f"Target for push → **Prospect-Data-1** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
     if st.button(f"📤 Push {len(new_to_outreach)} Prospects to Airtable (duplicate-safe)", disabled=disabled):
         with st.spinner("Re-checking latest records and creating new ones..."):
-            # Just-in-time recheck to shrink race window
             latest_existing = fetch_existing_domains(active_sources)
             to_push = [d for d in new_to_outreach if d not in latest_existing]
 
@@ -207,7 +201,6 @@ if new_to_outreach:
             date_str = datetime.now().strftime("%Y-%m-%d")
 
             for d in to_push:
-                # Final guard in Prospect-Data-1 itself (handles true concurrency)
                 if domain_exists_in_prospect(d):
                     skipped += 1
                     continue
@@ -219,7 +212,7 @@ if new_to_outreach:
                         "Added By Email": user_email
                     })
                     created += 1
-                    time.sleep(0.05)  # tiny pacing helps with rate limits
+                    time.sleep(0.05)
                 except Exception:
                     errors += 1
 
