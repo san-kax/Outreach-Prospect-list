@@ -224,11 +224,16 @@ def is_domain_safe_to_reuse(record_fields: dict, months_threshold: int = 12) -> 
     
     return parsed_date < threshold_date
 
-def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: int) -> tuple[str, set[str], int, int, str | None]:
-    """Fetch domains from a single Airtable source. Returns (label, domains_set, count, safe_count, field_used)."""
+def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: int, return_domain_dates: bool = False) -> tuple[str, set[str], int, int, str | None, dict[str, datetime] | None]:
+    """Fetch domains from a single Airtable source. Returns (label, domains_set, count, safe_count, field_used, domain_dates_dict).
+    
+    Args:
+        return_domain_dates: If True, also return a dict mapping domain -> date for Prospect-Data sources
+    """
     try:
         table = api.base(src["base_id"]).table(src["table_id"])
         is_disavow_list = src.get("is_disavow", False)
+        is_prospect_data_source = src["label"] in ["Prospect-Data", "Prospect-Data-1"]
         
         # Try to fetch only needed fields for better performance
         possible_domain_fields = ["Domain", "domain", "A Domain", "Live Link", "Referring page URL"]
@@ -263,6 +268,7 @@ def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: 
                 raise
         
         domains_set: set[str] = set()
+        domain_dates: dict[str, datetime] = {} if return_domain_dates and is_prospect_data_source else {}
         count = 0
         safe_count = 0
         domain_field_found = None
@@ -320,6 +326,17 @@ def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: 
             if d:
                 count += 1
                 
+                # Store date for Prospect-Data sources if requested
+                if return_domain_dates and is_prospect_data_source:
+                    date_field = find_date_field(fields)
+                    if date_field:
+                        parsed_date = parse_date(str(date_field))
+                        if parsed_date:
+                            # Handle timezone-aware dates
+                            if parsed_date.tzinfo is not None:
+                                parsed_date = parsed_date.replace(tzinfo=None)
+                            domain_dates[d] = parsed_date
+                
                 # Disavow lists: ALWAYS exclude
                 if is_disavow_list:
                     domains_set.add(d)
@@ -333,7 +350,7 @@ def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: 
         if count == 0 and fields_logged:
             logging.warning(f"⚠ {src['label']} returned 0 domains - available fields: {list(fields.keys())}")
         
-        return (src["label"], domains_set, count, safe_count, domain_field_found)
+        return (src["label"], domains_set, count, safe_count, domain_field_found, domain_dates if return_domain_dates and is_prospect_data_source else None)
         
     except Exception as e:
         error_str = str(e)
@@ -349,10 +366,10 @@ def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: 
             logging.error(f"✗ Error fetching from {src['label']} ({src['base_id']}): {e}")
             import traceback
             logging.error(traceback.format_exc())
-        return (src["label"], set(), 0, 0, None)
+        return (src["label"], set(), 0, 0, None, None)
 
 @st.cache_data(ttl=300)  # Increased cache time to 5 minutes
-def fetch_existing_domains(selected_sources: list[dict], show_progress: bool = False, exclude_old_domains: bool = True, months_threshold: int = 12) -> tuple[set[str], dict[str, int], dict[str, int]]:
+def fetch_existing_domains(selected_sources: list[dict], show_progress: bool = False, exclude_old_domains: bool = True, months_threshold: int = 12, return_source_mapping: bool = False) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, set[str]] | None, dict[str, dict[str, datetime]] | None]:
     """Read 'Domain' from all selected bases/tables and return a unified normalized set.
     
     Uses parallel processing to fetch from multiple sources simultaneously for better performance.
@@ -362,52 +379,130 @@ def fetch_existing_domains(selected_sources: list[dict], show_progress: bool = F
         show_progress: Whether to log progress
         exclude_old_domains: If True, exclude domains older than months_threshold (SAFE to reuse)
         months_threshold: Number of months after which a domain is considered SAFE to reuse
+        return_source_mapping: If True, also return domain_to_sources mapping and domain_dates_by_source
     
     Returns:
-        tuple: (all_domains_set, source_counts_dict, safe_domains_dict) where:
+        tuple: (all_domains_set, source_counts_dict, safe_domains_dict, domain_to_sources, domain_dates_by_source) where:
             - all_domains_set: Domains that should be excluded (not safe to reuse)
             - source_counts_dict: Total domains per source
             - safe_domains_dict: Count of SAFE (reusable) domains per source
+            - domain_to_sources: Dict mapping domain -> set of source labels (only if return_source_mapping=True)
+            - domain_dates_by_source: Dict mapping source label -> dict(domain -> date) (only if return_source_mapping=True)
     """
     all_domains: set[str] = set()
     source_counts: dict[str, int] = {}
     safe_domains: dict[str, int] = {}
+    domain_to_sources: dict[str, set[str]] = {} if return_source_mapping else None
+    domain_dates_by_source: dict[str, dict[str, datetime]] = {} if return_source_mapping else None
     
     # Process sources in parallel for better performance
     with ThreadPoolExecutor(max_workers=5) as executor:
         future_to_source = {
-            executor.submit(fetch_single_source, src, exclude_old_domains, months_threshold): src
+            executor.submit(fetch_single_source, src, exclude_old_domains, months_threshold, return_source_mapping): src
             for src in selected_sources
         }
         
         for future in as_completed(future_to_source):
-            label, domains_set, count, safe_count, field_used = future.result()
+            result = future.result()
+            label, domains_set, count, safe_count, field_used, domain_dates = result
             all_domains.update(domains_set)
             source_counts[label] = count
             safe_domains[label] = safe_count
+            
+            # Track which domains come from which sources
+            if return_source_mapping:
+                for domain in domains_set:
+                    if domain not in domain_to_sources:
+                        domain_to_sources[domain] = set()
+                    domain_to_sources[domain].add(label)
+                
+                # Store domain dates for Prospect-Data sources
+                if domain_dates:
+                    domain_dates_by_source[label] = domain_dates
             
             if show_progress:
                 active = count - safe_count
                 field_info = f" (using field: {field_used})" if field_used else ""
                 logging.info(f"✓ Fetched {count:,} domains from {label} - {active:,} active, {safe_count:,} SAFE{field_info}")
     
-    return all_domains, source_counts, safe_domains
+    return all_domains, source_counts, safe_domains, domain_to_sources, domain_dates_by_source
+
+def identify_reoutreach_candidates(
+    user_domains: set[str],
+    domain_to_sources: dict[str, set[str]],
+    domain_dates_by_source: dict[str, dict[str, datetime]],
+    months_threshold: int = 3
+) -> set[str]:
+    """Identify domains that are safe for re-outreach.
+    
+    A domain is a re-outreach candidate if:
+    1. It's in the user's input list
+    2. It's found ONLY in Prospect-Data or Prospect-Data-1 (not in any other sources)
+    3. The date in those sources is older than months_threshold (default 3 months)
+    
+    Args:
+        user_domains: Set of normalized domains from user's upload
+        domain_to_sources: Dict mapping domain -> set of source labels where it appears
+        domain_dates_by_source: Dict mapping source label -> dict(domain -> date)
+        months_threshold: Number of months after which a domain is considered old enough for re-outreach
+    
+    Returns:
+        Set of domains that are safe for re-outreach
+    """
+    reoutreach_candidates: set[str] = set()
+    prospect_data_sources = {"Prospect-Data", "Prospect-Data-1"}
+    threshold_date = datetime.now() - timedelta(days=months_threshold * 30)
+    
+    for domain in user_domains:
+        sources = domain_to_sources.get(domain, set())
+        
+        # Check if domain is only in Prospect-Data sources (and actually in at least one)
+        if sources and sources.issubset(prospect_data_sources) and sources.intersection(prospect_data_sources):
+            # Check if domain is older than threshold
+            # Logic:
+            # - If domain is in Prospect-Data-1, use that date (since that's the push target)
+            # - If domain is only in Prospect-Data (not in Prospect-Data-1), use Prospect-Data's date
+            is_old_enough = False
+            
+            # Priority: Check Prospect-Data-1 first if domain exists there (push target)
+            if "Prospect-Data-1" in sources:
+                if "Prospect-Data-1" in domain_dates_by_source:
+                    source_dates = domain_dates_by_source["Prospect-Data-1"]
+                    if domain in source_dates:
+                        domain_date = source_dates[domain]
+                        if domain_date < threshold_date:
+                            is_old_enough = True
+            # If domain is only in Prospect-Data (not in Prospect-Data-1), check Prospect-Data's date
+            elif "Prospect-Data" in sources:
+                if "Prospect-Data" in domain_dates_by_source:
+                    source_dates = domain_dates_by_source["Prospect-Data"]
+                    if domain in source_dates:
+                        domain_date = source_dates[domain]
+                        if domain_date < threshold_date:
+                            is_old_enough = True
+            
+            if is_old_enough:
+                reoutreach_candidates.add(domain)
+    
+    return reoutreach_candidates
 
 def _escape_for_formula(val: str) -> str:
     """Escape special characters for Airtable formula strings."""
     # Escape backslashes first, then single quotes
     return val.replace("\\", "\\\\").replace("'", "\\'")
 
-def domain_exists_in_prospect(domain_norm: str) -> bool:
-    """Guard check in the push target (Prospect-Data-1)."""
+def domain_exists_in_prospect(domain_norm: str) -> tuple[bool, str | None]:
+    """Check if domain exists in the push target (Prospect-Data-1). Returns (exists, record_id)."""
     try:
         formula = f"LOWER({{Domain}}) = '{_escape_for_formula(domain_norm.lower())}'"
         recs = push_table.all(formula=formula, max_records=1, fields=["Domain"])
-        return len(recs) > 0
+        if len(recs) > 0:
+            return True, recs[0].get("id")
+        return False, None
     except Exception as e:
         logging.error(f"Error checking domain existence for {domain_norm}: {e}")
         # Return True to be safe (skip rather than duplicate)
-        return True
+        return True, None
 
 # ---------------- UI ----------------
 st.title("🔗 Prospect Filtering & Airtable Sync")
@@ -486,13 +581,17 @@ st.write(f"📥 Uploaded rows: **{len(raw)}** | After normalization: **{len(new_
 st.write("**⏰ 12-Month Reuse Policy:**")
 st.caption("Domains older than 12 months are marked as SAFE and can be reused (excluded from duplicate check). **Disavow lists are ALWAYS excluded regardless of age.**")
 
+st.write("**🔄 3-Month Re-Outreach Policy:**")
+st.caption("Domains found ONLY in Prospect-Data or Prospect-Data-1 that are older than 3 months and not in any other sources are safe for re-outreach.")
+
 with st.spinner("Fetching existing domains from Airtable..."):
     try:
-        existing, source_counts, safe_domains = fetch_existing_domains(
+        existing, source_counts, safe_domains, domain_to_sources, domain_dates_by_source = fetch_existing_domains(
             active_sources, 
             show_progress=True, 
             exclude_old_domains=True, 
-            months_threshold=12
+            months_threshold=12,
+            return_source_mapping=True
         )
     except Exception as e:
         st.error(f"❌ Error fetching domains: {e}")
@@ -502,6 +601,20 @@ with st.spinner("Fetching existing domains from Airtable..."):
         existing = set()
         source_counts = {src["label"]: 0 for src in active_sources}
         safe_domains = {src["label"]: 0 for src in active_sources}
+        domain_to_sources = {}
+        domain_dates_by_source = {}
+
+# Identify re-outreach candidates (domains in Prospect-Data sources only, >3 months old)
+reoutreach_candidates = set()
+if domain_to_sources is not None and domain_dates_by_source is not None and domain_to_sources and domain_dates_by_source:
+    reoutreach_candidates = identify_reoutreach_candidates(
+        new_domains,
+        domain_to_sources,
+        domain_dates_by_source,
+        months_threshold=3
+    )
+    # Remove re-outreach candidates from existing set (they're safe to outreach again)
+    existing = existing - reoutreach_candidates
 
 # Calculate totals
 total_domains = sum(source_counts.values())
@@ -511,6 +624,8 @@ total_active = total_domains - total_safe
 # Display detailed breakdown
 st.info(f"📚 **Total domains:** **{total_domains:,}** | **Active (<12 months):** **{total_active:,}** | **🟢 SAFE (12+ months, reusable):** **{total_safe:,}**")
 st.info(f"🔒 **Domains excluded from upload (active duplicates):** **{len(existing):,}**")
+if reoutreach_candidates:
+    st.success(f"🔄 **Re-outreach candidates (3+ months old, only in Prospect-Data sources):** **{len(reoutreach_candidates):,}** - These are included in safe-to-outreach list.")
 
 with st.expander("📋 View detailed breakdown by source"):
     permission_issues = []
@@ -570,7 +685,12 @@ with st.expander("📋 View detailed breakdown by source"):
                             st.write("- Try creating a new token with all scopes enabled")
 
 new_to_outreach = sorted(d for d in new_domains if d not in existing)
-st.success(f"✅ {len(new_to_outreach)} new domains currently safe to outreach (pre-push check).")
+reoutreach_in_list = len([d for d in new_to_outreach if d in reoutreach_candidates])
+if reoutreach_in_list > 0:
+    st.success(f"✅ {len(new_to_outreach)} new domains currently safe to outreach (pre-push check).")
+    st.info(f"📊 **Breakdown:** {len(new_to_outreach) - reoutreach_in_list:,} completely new domains + {reoutreach_in_list:,} re-outreach candidates (3+ months old, only in Prospect-Data sources).")
+else:
+    st.success(f"✅ {len(new_to_outreach)} new domains currently safe to outreach (pre-push check).")
 
 df_result = pd.DataFrame({"Domain": new_to_outreach})
 st.dataframe(df_result, use_container_width=True)
@@ -585,17 +705,30 @@ if new_to_outreach:
     st.write(f"Target for push → **Prospect-Data-1** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
     if st.button(f"📤 Push {len(new_to_outreach)} Prospects to Airtable (duplicate-safe)", disabled=disabled):
         with st.spinner("Re-checking latest records and creating new ones..."):
-            latest_existing, _, _ = fetch_existing_domains(
+            latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source = fetch_existing_domains(
                 active_sources, 
                 exclude_old_domains=True, 
-                months_threshold=12
+                months_threshold=12,
+                return_source_mapping=True
             )
+            # Re-identify re-outreach candidates with latest data
+            latest_reoutreach = set()
+            if latest_domain_to_sources is not None and latest_domain_dates_by_source is not None and latest_domain_to_sources and latest_domain_dates_by_source:
+                latest_reoutreach = identify_reoutreach_candidates(
+                    set(new_to_outreach),
+                    latest_domain_to_sources,
+                    latest_domain_dates_by_source,
+                    months_threshold=3
+                )
+                # Remove re-outreach candidates from latest_existing
+                latest_existing = latest_existing - latest_reoutreach
             to_push = [d for d in new_to_outreach if d not in latest_existing]
             
             if len(to_push) < len(new_to_outreach):
                 st.warning(f"⚠️ {len(new_to_outreach) - len(to_push)} domains were added by another process. Only {len(to_push)} will be pushed.")
 
             created = 0
+            updated = 0
             skipped = 0
             errors  = 0
             error_details = []
@@ -605,22 +738,44 @@ if new_to_outreach:
             total = len(to_push)
             
             for idx, d in enumerate(to_push):
-                if domain_exists_in_prospect(d):
-                    skipped += 1
-                    continue
-                try:
-                    push_table.create({
-                        "Domain": d,
-                        "Date": date_str,
-                        "Added By Name": user_name,
-                        "Added By Email": user_email
-                    })
-                    created += 1
-                    time.sleep(0.05)
-                except Exception as e:
-                    errors += 1
-                    error_details.append(f"{d}: {str(e)}")
-                    logging.error(f"Error creating record for {d}: {e}")
+                exists, record_id = domain_exists_in_prospect(d)
+                
+                # Check if this is a re-outreach candidate
+                is_reoutreach = d in latest_reoutreach
+                
+                if exists:
+                    if is_reoutreach and record_id:
+                        # Update existing record for re-outreach candidates
+                        try:
+                            push_table.update(record_id, {
+                                "Date": date_str,
+                                "Added By Name": user_name,
+                                "Added By Email": user_email
+                            })
+                            updated += 1
+                            time.sleep(0.05)
+                        except Exception as e:
+                            errors += 1
+                            error_details.append(f"{d} (update): {str(e)}")
+                            logging.error(f"Error updating record for {d}: {e}")
+                    else:
+                        # Skip domains that exist but aren't re-outreach candidates
+                        skipped += 1
+                else:
+                    # Create new record
+                    try:
+                        push_table.create({
+                            "Domain": d,
+                            "Date": date_str,
+                            "Added By Name": user_name,
+                            "Added By Email": user_email
+                        })
+                        created += 1
+                        time.sleep(0.05)
+                    except Exception as e:
+                        errors += 1
+                        error_details.append(f"{d}: {str(e)}")
+                        logging.error(f"Error creating record for {d}: {e}")
                 
                 # Update progress
                 if total > 0:
@@ -630,7 +785,14 @@ if new_to_outreach:
             st.session_state.pushed = True
             
             # Show results
-            st.success(f"✅ **Created:** {created}  •  ⏭️ **Skipped (already existed):** {skipped}  •  ⚠️ **Errors:** {errors}")
+            result_parts = [f"✅ **Created:** {created}"]
+            if updated > 0:
+                result_parts.append(f"🔄 **Updated (re-outreach):** {updated}")
+            if skipped > 0:
+                result_parts.append(f"⏭️ **Skipped (already existed):** {skipped}")
+            if errors > 0:
+                result_parts.append(f"⚠️ **Errors:** {errors}")
+            st.success("  •  ".join(result_parts))
             
             if errors > 0 and error_details:
                 with st.expander("⚠️ View error details"):
