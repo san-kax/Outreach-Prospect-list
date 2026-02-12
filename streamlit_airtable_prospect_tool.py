@@ -120,6 +120,7 @@ SHARED_SOURCES = [
     {"label": "BonusFinder-Database", "base_id": "appZEyAoVubSrBl9w", "table_id": "tbl4pzZFkzfKLhtkK", "is_disavow": False},
     {"label": "GDC-Disavow-List",    "base_id": "appJTJQwjHRaAyLkw", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True},
     {"label": "GDC-Disavow-List-1",  "base_id": "appEEpV8mgLcBMQLE", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True},
+    {"label": "Outreach-Rejected-Sites", "base_id": "appTf6MmZDgouu8SN", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True},
     {"label": "Local States Vertical Live Links", "base_id": "app08yUTcPhJVPxCI", "table_id": "tbllmyX2xNVXMEEnc", "is_disavow": False},
     {"label": "Sports Vertical Bookies.com and Rotowire", "base_id": "appDFsy6RWw5TRNH6", "table_id": "tbl8whN06WyCOo5uk", "is_disavow": False},
     {"label": "Casinos-Links",       "base_id": "appay75NrffUxBMbM", "table_id": "tblx8ZGluvQ9cWdXh", "is_disavow": False},
