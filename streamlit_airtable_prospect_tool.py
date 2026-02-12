@@ -117,6 +117,7 @@ SHARED_SOURCES = [
     {"label": "GDC-Database",        "base_id": "appUoOvkqzJvyyMvC", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False},
     {"label": "WB-Database",         "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4", "is_disavow": False},
     {"label": "Freebets-Database",   "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F", "is_disavow": False},
+    {"label": "BonusFinder-Database", "base_id": "appZEyAoVubSrBl9w", "table_id": "tbl4pzZFkzfKLhtkK", "is_disavow": False},
     {"label": "GDC-Disavow-List",    "base_id": "appJTJQwjHRaAyLkw", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True},
     {"label": "GDC-Disavow-List-1",  "base_id": "appEEpV8mgLcBMQLE", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True},
     {"label": "Local States Vertical Live Links", "base_id": "app08yUTcPhJVPxCI", "table_id": "tbllmyX2xNVXMEEnc", "is_disavow": False},
