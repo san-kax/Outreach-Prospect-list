@@ -110,6 +110,11 @@ VERTICALS = {
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-Rotowire",
     },
+    "States": {
+        "prospect_base_id": "appzVpYiLO90EgRgj",
+        "prospect_table_id": "tbliCOQZY9RICLsLP",
+        "prospect_label": "Prospect-Data-States-Sites",
+    },
 }
 
 # ---- Shared deduplication sources (checked across all verticals) ----
