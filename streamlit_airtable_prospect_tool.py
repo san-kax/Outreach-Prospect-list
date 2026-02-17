@@ -31,7 +31,7 @@ AIRTABLE_TOKEN = (
     or os.getenv("AIRTABLE_TOKEN")
 )
 if not AIRTABLE_TOKEN:
-    st.error("❌ Missing Airtable token. Add AIRTABLE_TOKEN (or airtable_token) in Streamlit secrets or env.")
+    st.error("Missing Airtable token. Add AIRTABLE_TOKEN (or airtable_token) in Streamlit secrets or env.")
     st.stop()
 
 api = Api(AIRTABLE_TOKEN)
@@ -57,19 +57,19 @@ def test_base_access(base_id: str, table_id: str) -> tuple[bool, str]:
         # Test 2: Try to get just one record (requires data.records:read)
         try:
             records = table.all(max_records=1)
-            return True, "✅ Access OK - Can read schema and data"
+            return True, "Access OK - Can read schema and data"
         except Exception as data_error:
             error_str = str(data_error)
             if "403" in error_str or "Forbidden" in error_str:
                 if schema_ok:
-                    return False, f"❌ 403 Forbidden - Can see base schema but cannot read records. Token may need 'data.records:read' scope."
+                    return False, f"403 Forbidden - Can see base schema but cannot read records. Token may need 'data.records:read' scope."
                 else:
-                    return False, f"❌ 403 Forbidden - Cannot access base. Check: 1) Token scopes 2) Workspace permissions 3) Base is in correct workspace"
+                    return False, f"403 Forbidden - Cannot access base. Check: 1) Token scopes 2) Workspace permissions 3) Base is in correct workspace"
             return False, f"Error: {error_str[:150]}"
     except Exception as e:
         error_str = str(e)
         if "403" in error_str or "Forbidden" in error_str:
-            return False, f"❌ 403 Forbidden - Token may not have access to base {base_id}"
+            return False, f"403 Forbidden - Token may not have access to base {base_id}"
         return False, f"Error: {error_str[:150]}"
 
 # ---- Verticals: each has its own Prospect-Data push target ----
@@ -117,19 +117,38 @@ VERTICALS = {
     },
 }
 
-# ---- Shared deduplication sources (checked across all verticals) ----
-SHARED_SOURCES = [
-    {"label": "GDC-Database",        "base_id": "appUoOvkqzJvyyMvC", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False},
-    {"label": "WB-Database",         "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4", "is_disavow": False},
-    {"label": "Freebets-Database",   "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F", "is_disavow": False},
-    {"label": "BonusFinder-Database", "base_id": "appZEyAoVubSrBl9w", "table_id": "tbl4pzZFkzfKLhtkK", "is_disavow": False},
-    {"label": "GDC-Disavow-List",    "base_id": "appJTJQwjHRaAyLkw", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True},
-    {"label": "GDC-Disavow-List-1",  "base_id": "appEEpV8mgLcBMQLE", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True},
-    {"label": "Outreach-Rejected-Sites", "base_id": "appTf6MmZDgouu8SN", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True},
-    {"label": "Local States Vertical Live Links", "base_id": "app08yUTcPhJVPxCI", "table_id": "tbllmyX2xNVXMEEnc", "is_disavow": False},
-    {"label": "Sports Vertical Bookies.com and Rotowire", "base_id": "appDFsy6RWw5TRNH6", "table_id": "tbl8whN06WyCOo5uk", "is_disavow": False},
-    {"label": "Casinos-Links",       "base_id": "appay75NrffUxBMbM", "table_id": "tblx8ZGluvQ9cWdXh", "is_disavow": False},
+# ---- Database / Live Link sources (domain here = live link confirmed) ----
+# Each mapped to the vertical(s) it belongs to for per-vertical threshold logic.
+# "verticals" list indicates which vertical(s) this database represents.
+DATABASE_SOURCES = [
+    {"label": "GDC-Database",        "base_id": "appUoOvkqzJvyyMvC", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": True, "verticals": ["GDC"]},
+    {"label": "WB-Database",         "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4", "is_disavow": False, "is_database": True, "verticals": ["WhichBingo"]},
+    {"label": "Freebets-Database",   "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F", "is_disavow": False, "is_database": True, "verticals": ["Freebets"]},
+    {"label": "BonusFinder-Database", "base_id": "appZEyAoVubSrBl9w", "table_id": "tbl4pzZFkzfKLhtkK", "is_disavow": False, "is_database": True, "verticals": ["BonusFinder"]},
+    {"label": "Casinos-Links",       "base_id": "appay75NrffUxBMbM", "table_id": "tblx8ZGluvQ9cWdXh", "is_disavow": False, "is_database": True, "verticals": ["Casinos"]},
+    {"label": "Local States Vertical Live Links", "base_id": "app08yUTcPhJVPxCI", "table_id": "tbllmyX2xNVXMEEnc", "is_disavow": False, "is_database": True, "verticals": ["States"]},
+    {"label": "Sports Vertical Bookies.com and Rotowire", "base_id": "appDFsy6RWw5TRNH6", "table_id": "tbl8whN06WyCOo5uk", "is_disavow": False, "is_database": True, "verticals": ["Bookies", "Rotowire"]},
 ]
+
+# ---- Disavow / Rejected sources (always blocked, never reusable) ----
+DISAVOW_SOURCES = [
+    {"label": "GDC-Disavow-List",    "base_id": "appJTJQwjHRaAyLkw", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True, "is_database": False},
+    {"label": "GDC-Disavow-List-1",  "base_id": "appEEpV8mgLcBMQLE", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True, "is_database": False},
+    {"label": "Outreach-Rejected-Sites", "base_id": "appTf6MmZDgouu8SN", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True, "is_database": False},
+]
+
+# ---- Build a set of ALL prospect-data labels across all verticals ----
+ALL_PROSPECT_LABELS: set[str] = set()
+for _vconfig in VERTICALS.values():
+    ALL_PROSPECT_LABELS.add(_vconfig["prospect_label"])
+    if "extra_prospect" in _vconfig:
+        ALL_PROSPECT_LABELS.add(_vconfig["extra_prospect"]["label"])
+
+# ---- Build a set of ALL database labels ----
+ALL_DATABASE_LABELS: set[str] = {src["label"] for src in DATABASE_SOURCES}
+
+# ---- Build a set of ALL disavow labels ----
+ALL_DISAVOW_LABELS: set[str] = {src["label"] for src in DISAVOW_SOURCES}
 
 # --------------- Helpers ---------------
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
@@ -208,7 +227,6 @@ def parse_date(date_str: str) -> datetime | None:
                     pass
 
             # Fallback to datetime.strptime for common formats
-            # Common Airtable date formats
             formats = [
                 "%Y-%m-%d",              # 2024-11-25
                 "%m/%d/%Y",              # 11/25/2024
@@ -230,7 +248,6 @@ def parse_date(date_str: str) -> datetime | None:
 
 def find_date_field(record_fields: dict) -> str | None:
     """Find date field in record, checking common field names."""
-    # Common date field names in Airtable
     date_field_names = [
         "Date", "date", "Added Date", "Added date", "Publication Date",
         "Publication date", "Created Date", "Created date", "First seen",
@@ -241,43 +258,54 @@ def find_date_field(record_fields: dict) -> str | None:
             return record_fields[field_name]
     return None
 
-def is_domain_safe_to_reuse(record_fields: dict, months_threshold: int = 12) -> bool:
-    """Check if domain is older than threshold months and can be reused."""
+def make_tz_naive(dt: datetime) -> datetime:
+    """Ensure a datetime is timezone-naive for safe comparison."""
+    if dt is not None and dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+def get_domain_age_months(record_fields: dict) -> float | None:
+    """Get domain age in months from its date field. Returns None if no date found."""
     date_field = find_date_field(record_fields)
     if not date_field:
-        # If no date, consider it as old (safe to reuse) - conservative approach
-        return True
-
+        return None
     parsed_date = parse_date(str(date_field))
     if not parsed_date:
-        # If date parsing fails, consider it old (safe to reuse)
+        return None
+    parsed_date = make_tz_naive(parsed_date)
+    now = datetime.now()
+    delta = now - parsed_date
+    return delta.days / 30.0
+
+def is_domain_safe_to_reuse(record_fields: dict, months_threshold: int = 12) -> bool:
+    """Check if domain is older than threshold months and can be reused."""
+    age_months = get_domain_age_months(record_fields)
+    if age_months is None:
+        # If no date, consider it as old (safe to reuse) - conservative approach
         return True
+    return age_months >= months_threshold
 
-    # Calculate if domain is older than threshold months
-    threshold_date = datetime.now() - timedelta(days=months_threshold * 30)
 
-    # Handle timezone-aware vs timezone-naive datetime comparison
-    # Make both timezone-naive for comparison
-    if parsed_date.tzinfo is not None:
-        # Remove timezone info for comparison
-        parsed_date = parsed_date.replace(tzinfo=None)
-    if threshold_date.tzinfo is not None:
-        threshold_date = threshold_date.replace(tzinfo=None)
+def fetch_single_source(
+    src: dict,
+    exclude_old_domains: bool,
+    months_threshold: int,
+    return_domain_dates: bool = False,
+    date_tracking_labels: set[str] | None = None,
+) -> tuple[str, set[str], int, int, str | None, dict[str, datetime] | None]:
+    """Fetch domains from a single Airtable source.
 
-    return parsed_date < threshold_date
-
-def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: int, return_domain_dates: bool = False, prospect_data_labels: set[str] | None = None) -> tuple[str, set[str], int, int, str | None, dict[str, datetime] | None]:
-    """Fetch domains from a single Airtable source. Returns (label, domains_set, count, safe_count, field_used, domain_dates_dict).
+    Returns (label, domains_set, count, safe_count, field_used, domain_dates_dict).
 
     Args:
-        return_domain_dates: If True, also return a dict mapping domain -> date for Prospect-Data sources
-        prospect_data_labels: Set of labels that are considered "Prospect-Data" sources for this vertical
+        return_domain_dates: If True, also return a dict mapping domain -> date for tracked sources
+        date_tracking_labels: Set of labels for which to track domain dates (Prospect-Data + Database sources)
     """
     try:
         table = api.base(src["base_id"]).table(src["table_id"])
         is_disavow_list = src.get("is_disavow", False)
-        _prospect_labels = prospect_data_labels or set()
-        is_prospect_data_source = src["label"] in _prospect_labels
+        _date_labels = date_tracking_labels or set()
+        should_track_dates = src["label"] in _date_labels
 
         # Try to fetch only needed fields for better performance
         possible_domain_fields = ["Domain", "domain", "A Domain", "Live Link", "Referring page URL"]
@@ -289,30 +317,20 @@ def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: 
             records = table.all(fields=all_fields_to_fetch)
         except Exception as e1:
             error_str = str(e1)
-            # Check if it's a permission error (403)
             if "403" in error_str or "Forbidden" in error_str or "INVALID_PERMISSIONS" in error_str:
-                logging.error(f"⚠ Permission denied for {src['label']} (base: {src['base_id']}, table: {src['table_id']})")
-                logging.error(f"   Even though token shows access, API returns 403. Possible causes:")
-                logging.error(f"   1. Token needs to be saved/refreshed in Airtable")
-                logging.error(f"   2. Base/table IDs might be incorrect")
-                logging.error(f"   3. Different token is being used than configured")
-                raise  # Re-raise to be caught by outer handler
+                logging.error(f"Permission denied for {src['label']} (base: {src['base_id']}, table: {src['table_id']})")
+                raise
             # If that fails for other reasons, fetch all fields (slower but more reliable)
             try:
                 records = table.all()
             except Exception as e2:
                 error_str2 = str(e2)
-                # If even fetching all fields fails, check if it's a permission error
                 if "403" in error_str2 or "Forbidden" in error_str2 or "INVALID_PERMISSIONS" in error_str2:
-                    logging.error(f"⚠ Permission denied for {src['label']} (base: {src['base_id']}, table: {src['table_id']})")
-                    logging.error(f"   Even though token shows access, API returns 403. Possible causes:")
-                    logging.error(f"   1. Token needs to be saved/refreshed in Airtable")
-                    logging.error(f"   2. Base/table IDs might be incorrect")
-                    logging.error(f"   3. Different token is being used than configured")
+                    logging.error(f"Permission denied for {src['label']} (base: {src['base_id']}, table: {src['table_id']})")
                 raise
 
         domains_set: set[str] = set()
-        domain_dates: dict[str, datetime] = {} if return_domain_dates and is_prospect_data_source else {}
+        domain_dates: dict[str, datetime] = {}
         count = 0
         safe_count = 0
         domain_field_found = None
@@ -370,49 +388,49 @@ def fetch_single_source(src: dict, exclude_old_domains: bool, months_threshold: 
             if d:
                 count += 1
 
-                # Store date for Prospect-Data sources if requested
-                if return_domain_dates and is_prospect_data_source:
+                # Store date for tracked sources if requested
+                if return_domain_dates and should_track_dates:
                     date_field = find_date_field(fields)
                     if date_field:
                         parsed_date = parse_date(str(date_field))
                         if parsed_date:
-                            # Handle timezone-aware dates
-                            if parsed_date.tzinfo is not None:
-                                parsed_date = parsed_date.replace(tzinfo=None)
+                            parsed_date = make_tz_naive(parsed_date)
                             domain_dates[d] = parsed_date
 
-                # Disavow lists: ALWAYS exclude
+                # Disavow lists: ALWAYS exclude, no age exception
                 if is_disavow_list:
                     domains_set.add(d)
                 else:
-                    # Regular sources: apply 12-month rule
+                    # Regular sources: apply age-based threshold
                     if exclude_old_domains and is_domain_safe_to_reuse(fields, months_threshold):
                         safe_count += 1
                     else:
                         domains_set.add(d)
 
         if count == 0 and fields_logged:
-            logging.warning(f"⚠ {src['label']} returned 0 domains - available fields: {list(fields.keys())}")
+            logging.warning(f"{src['label']} returned 0 domains - available fields: {list(fields.keys())}")
 
-        return (src["label"], domains_set, count, safe_count, domain_field_found, domain_dates if return_domain_dates and is_prospect_data_source else None)
+        return (src["label"], domains_set, count, safe_count, domain_field_found, domain_dates if return_domain_dates and should_track_dates else None)
 
     except Exception as e:
         error_str = str(e)
-        # Check if it's a permission error (403)
         if "403" in error_str or "Forbidden" in error_str or "INVALID_PERMISSIONS" in error_str:
-            logging.error(f"✗ Permission denied for {src['label']} (base: {src['base_id']}, table: {src['table_id']})")
-            logging.error(f"   API returns 403 even though token shows access. Troubleshooting:")
-            logging.error(f"   1. Verify token in Streamlit secrets matches the token you're editing")
-            logging.error(f"   2. Try saving the token again in Airtable (even if already saved)")
-            logging.error(f"   3. Verify base_id '{src['base_id']}' and table_id '{src['table_id']}' are correct")
-            logging.error(f"   4. Check if token has 'data.records:read' scope enabled")
+            logging.error(f"Permission denied for {src['label']} (base: {src['base_id']}, table: {src['table_id']})")
         else:
-            logging.error(f"✗ Error fetching from {src['label']} ({src['base_id']}): {e}")
+            logging.error(f"Error fetching from {src['label']} ({src['base_id']}): {e}")
             logging.error(traceback.format_exc())
         return (src["label"], set(), 0, 0, None, None)
 
-@st.cache_data(ttl=300)  # Increased cache time to 5 minutes
-def fetch_existing_domains(selected_sources: list[dict], show_progress: bool = False, exclude_old_domains: bool = True, months_threshold: int = 12, return_source_mapping: bool = False, prospect_data_labels: tuple[str, ...] = ()) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, set[str]] | None, dict[str, dict[str, datetime]] | None]:
+
+@st.cache_data(ttl=300)
+def fetch_existing_domains(
+    selected_sources: list[dict],
+    show_progress: bool = False,
+    exclude_old_domains: bool = True,
+    months_threshold: int = 12,
+    return_source_mapping: bool = False,
+    date_tracking_labels: tuple[str, ...] = (),
+) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, set[str]] | None, dict[str, dict[str, datetime]] | None]:
     """Read 'Domain' from all selected bases/tables and return a unified normalized set.
 
     Uses parallel processing to fetch from multiple sources simultaneously for better performance.
@@ -423,27 +441,22 @@ def fetch_existing_domains(selected_sources: list[dict], show_progress: bool = F
         exclude_old_domains: If True, exclude domains older than months_threshold (SAFE to reuse)
         months_threshold: Number of months after which a domain is considered SAFE to reuse
         return_source_mapping: If True, also return domain_to_sources mapping and domain_dates_by_source
-        prospect_data_labels: Tuple of labels that are considered "Prospect-Data" sources for this vertical
+        date_tracking_labels: Tuple of labels for which to track domain dates
 
     Returns:
-        tuple: (all_domains_set, source_counts_dict, safe_domains_dict, domain_to_sources, domain_dates_by_source) where:
-            - all_domains_set: Domains that should be excluded (not safe to reuse)
-            - source_counts_dict: Total domains per source
-            - safe_domains_dict: Count of SAFE (reusable) domains per source
-            - domain_to_sources: Dict mapping domain -> set of source labels (only if return_source_mapping=True)
-            - domain_dates_by_source: Dict mapping source label -> dict(domain -> date) (only if return_source_mapping=True)
+        tuple: (all_domains_set, source_counts_dict, safe_domains_dict, domain_to_sources, domain_dates_by_source)
     """
     all_domains: set[str] = set()
     source_counts: dict[str, int] = {}
     safe_domains: dict[str, int] = {}
     domain_to_sources: dict[str, set[str]] = {} if return_source_mapping else None
     domain_dates_by_source: dict[str, dict[str, datetime]] = {} if return_source_mapping else None
-    _prospect_labels_set = set(prospect_data_labels)
+    _date_labels_set = set(date_tracking_labels)
 
     # Process sources in parallel for better performance
     with ThreadPoolExecutor(max_workers=5) as executor:
         future_to_source = {
-            executor.submit(fetch_single_source, src, exclude_old_domains, months_threshold, return_source_mapping, _prospect_labels_set): src
+            executor.submit(fetch_single_source, src, exclude_old_domains, months_threshold, return_source_mapping, _date_labels_set): src
             for src in selected_sources
         }
 
@@ -461,84 +474,149 @@ def fetch_existing_domains(selected_sources: list[dict], show_progress: bool = F
                         domain_to_sources[domain] = set()
                     domain_to_sources[domain].add(label)
 
-                # Store domain dates for Prospect-Data sources
+                # Store domain dates for tracked sources
                 if domain_dates:
                     domain_dates_by_source[label] = domain_dates
 
             if show_progress:
                 active = count - safe_count
                 field_info = f" (using field: {field_used})" if field_used else ""
-                logging.info(f"✓ Fetched {count:,} domains from {label} - {active:,} active, {safe_count:,} SAFE{field_info}")
+                logging.info(f"Fetched {count:,} domains from {label} - {active:,} active, {safe_count:,} SAFE{field_info}")
 
     return all_domains, source_counts, safe_domains, domain_to_sources, domain_dates_by_source
 
-def identify_reoutreach_candidates(
-    user_domains: set[str],
+
+def apply_smart_dedup_rules(
+    all_domains: set[str],
     domain_to_sources: dict[str, set[str]],
     domain_dates_by_source: dict[str, dict[str, datetime]],
-    months_threshold: int = 3,
-    prospect_data_labels: set[str] | None = None,
-    push_target_label: str | None = None
-) -> set[str]:
-    """Identify domains that are safe for re-outreach.
+    selected_vertical: str,
+) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Apply the 4 business rules to determine which domains to block/allow.
 
-    A domain is a re-outreach candidate if:
-    1. It's in the user's input list
-    2. It's found ONLY in Prospect-Data sources for this vertical (not in any other sources)
-    3. The date in those sources is older than months_threshold (default 3 months)
+    Rules:
+        1. No simultaneous outreach - domains in ANY Prospect-Data source are blocked (handled by mandatory sources)
+        2. Live link (Database) sites safe after 12 months for SAME vertical
+        3. Prospect-only domains (no live link) safe after 3 months for ALL builders
+        4. Live link (Database) sites safe after 4 months for DIFFERENT vertical
 
     Args:
-        user_domains: Set of normalized domains from user's upload
-        domain_to_sources: Dict mapping domain -> set of source labels where it appears
+        all_domains: Set of all domains currently in the blocking set (from fetch)
+        domain_to_sources: Dict mapping domain -> set of source labels
         domain_dates_by_source: Dict mapping source label -> dict(domain -> date)
-        months_threshold: Number of months after which a domain is considered old enough for re-outreach
-        prospect_data_labels: Set of labels considered "Prospect-Data" sources for this vertical
-        push_target_label: The label of the push target (checked first for date)
+        selected_vertical: The vertical the current builder selected
 
     Returns:
-        Set of domains that are safe for re-outreach
+        tuple: (
+            final_blocked: domains that should remain blocked,
+            safe_prospect_3m: domains safe due to 3-month no-result rule (Rule 3),
+            safe_db_diff_vertical_4m: domains safe due to 4-month different-client rule (Rule 4),
+            safe_db_same_vertical_12m: domains safe due to 12-month same-vertical rule (Rule 2),
+        )
     """
-    reoutreach_candidates: set[str] = set()
-    _prospect_labels = prospect_data_labels or set()
-    _push_label = push_target_label
-    threshold_date = datetime.now() - timedelta(days=months_threshold * 30)
+    now = datetime.now()
+    threshold_3m = now - timedelta(days=3 * 30)
+    threshold_4m = now - timedelta(days=4 * 30)
+    threshold_12m = now - timedelta(days=12 * 30)
 
-    for domain in user_domains:
+    # Build lookup: which database labels belong to which verticals
+    db_label_to_verticals: dict[str, list[str]] = {}
+    for db_src in DATABASE_SOURCES:
+        db_label_to_verticals[db_src["label"]] = db_src["verticals"]
+
+    safe_prospect_3m: set[str] = set()       # Rule 3: no-result after 3 months
+    safe_db_diff_vertical_4m: set[str] = set()  # Rule 4: live link, different client, 4+ months
+    safe_db_same_vertical_12m: set[str] = set()  # Rule 2: live link, same client, 12+ months
+
+    for domain in all_domains:
         sources = domain_to_sources.get(domain, set())
+        if not sources:
+            continue
 
-        # Check if domain is only in Prospect-Data sources (and actually in at least one)
-        if sources and sources.issubset(_prospect_labels) and sources.intersection(_prospect_labels):
-            # Check if domain is older than threshold
-            # Priority: Check push target first, then other prospect sources
-            is_old_enough = False
+        # Classify which source types this domain appears in
+        in_prospect_sources = sources.intersection(ALL_PROSPECT_LABELS)
+        in_database_sources = sources.intersection(ALL_DATABASE_LABELS)
+        in_disavow_sources = sources.intersection(ALL_DISAVOW_LABELS)
 
-            # Priority: Check push target first if domain exists there
-            if _push_label and _push_label in sources:
-                if _push_label in domain_dates_by_source:
-                    source_dates = domain_dates_by_source[_push_label]
-                    if domain in source_dates:
-                        domain_date = source_dates[domain]
-                        if domain_date < threshold_date:
-                            is_old_enough = True
-            else:
-                # Check other prospect sources
-                for plabel in _prospect_labels:
-                    if plabel in sources and plabel in domain_dates_by_source:
-                        source_dates = domain_dates_by_source[plabel]
-                        if domain in source_dates:
-                            domain_date = source_dates[domain]
-                            if domain_date < threshold_date:
-                                is_old_enough = True
+        # Disavow: ALWAYS blocked, skip any other logic
+        if in_disavow_sources:
+            continue
+
+        # --- Rule 3: Domain is ONLY in Prospect-Data (no live link), older than 3 months ---
+        if in_prospect_sources and not in_database_sources:
+            # Check if ALL prospect entries for this domain are older than 3 months
+            all_old_enough = True
+            has_date = False
+            for plabel in in_prospect_sources:
+                if plabel in domain_dates_by_source:
+                    dates = domain_dates_by_source[plabel]
+                    if domain in dates:
+                        has_date = True
+                        domain_date = make_tz_naive(dates[domain])
+                        if domain_date >= threshold_3m:
+                            all_old_enough = False
                             break
 
-            if is_old_enough:
-                reoutreach_candidates.add(domain)
+            if has_date and all_old_enough:
+                safe_prospect_3m.add(domain)
+            continue  # Don't apply database rules to prospect-only domains
 
-    return reoutreach_candidates
+        # --- Rules 2 & 4: Domain is in Database source(s) (live link confirmed) ---
+        if in_database_sources:
+            # Determine if the database is same-vertical or different-vertical
+            is_same_vertical_db = False
+            is_diff_vertical_db = False
+
+            for db_label in in_database_sources:
+                db_verticals = db_label_to_verticals.get(db_label, [])
+                if selected_vertical in db_verticals:
+                    is_same_vertical_db = True
+                else:
+                    is_diff_vertical_db = True
+
+            # Get the most recent date across all database entries for this domain
+            most_recent_db_date = None
+            for db_label in in_database_sources:
+                if db_label in domain_dates_by_source:
+                    dates = domain_dates_by_source[db_label]
+                    if domain in dates:
+                        d_date = make_tz_naive(dates[domain])
+                        if most_recent_db_date is None or d_date > most_recent_db_date:
+                            most_recent_db_date = d_date
+
+            if most_recent_db_date is None:
+                # No date found - treat as old/safe (conservative: allow reuse)
+                if is_same_vertical_db:
+                    safe_db_same_vertical_12m.add(domain)
+                elif is_diff_vertical_db:
+                    safe_db_diff_vertical_4m.add(domain)
+                continue
+
+            # Rule 2: Same vertical, 12+ months old -> safe
+            if is_same_vertical_db and not is_diff_vertical_db:
+                if most_recent_db_date < threshold_12m:
+                    safe_db_same_vertical_12m.add(domain)
+
+            # Rule 4: Different vertical only, 4+ months old -> safe
+            elif is_diff_vertical_db and not is_same_vertical_db:
+                if most_recent_db_date < threshold_4m:
+                    safe_db_diff_vertical_4m.add(domain)
+
+            # Both same AND different vertical databases have this domain
+            elif is_same_vertical_db and is_diff_vertical_db:
+                # Must satisfy the stricter rule (12 months for same vertical)
+                if most_recent_db_date < threshold_12m:
+                    safe_db_same_vertical_12m.add(domain)
+
+    # Combine all safe domains to remove from blocked set
+    all_safe = safe_prospect_3m | safe_db_diff_vertical_4m | safe_db_same_vertical_12m
+    final_blocked = all_domains - all_safe
+
+    return final_blocked, safe_prospect_3m, safe_db_diff_vertical_4m, safe_db_same_vertical_12m
+
 
 def _escape_for_formula(val: str) -> str:
     """Escape special characters for Airtable formula strings."""
-    # Escape backslashes first, then single quotes
     return val.replace("\\", "\\\\").replace("'", "\\'")
 
 def domain_exists_in_prospect(domain_norm: str, push_table_ref) -> tuple[bool, str | None]:
@@ -551,13 +629,12 @@ def domain_exists_in_prospect(domain_norm: str, push_table_ref) -> tuple[bool, s
         return False, None
     except Exception as e:
         logging.error(f"Error checking domain existence for {domain_norm}: {e}")
-        # Return True to be safe (skip rather than duplicate)
         return True, None
 
 # ---------------- UI ----------------
-st.title("🔗 Prospect Filtering & Airtable Sync")
+st.title("Prospect Filtering & Airtable Sync")
 
-st.subheader("👤 User")
+st.subheader("User")
 user_name  = st.text_input("Your name:")
 user_email = st.text_input("Your email:")
 
@@ -574,15 +651,15 @@ def is_valid_email(email: str) -> bool:
     return True
 
 if not user_name or not user_email:
-    st.warning("⚠️ Please provide your name and email to continue.")
+    st.warning("Please provide your name and email to continue.")
     st.stop()
 
 if not is_valid_email(user_email):
-    st.error("❌ Please provide a valid email address.")
+    st.error("Please provide a valid email address.")
     st.stop()
 
 # ---------- Vertical selection ----------
-st.subheader("🏢 Vertical")
+st.subheader("Vertical")
 selected_vertical = st.selectbox(
     "Select your vertical:",
     list(VERTICALS.keys()),
@@ -596,64 +673,93 @@ PUSH_TABLE_ID = vertical_config["prospect_table_id"]
 push_table = api.base(PUSH_BASE_ID).table(PUSH_TABLE_ID)
 push_target_label = vertical_config["prospect_label"]
 
-# Build the prospect source (always checked — the push target itself)
+# Build the prospect source (always checked - the push target itself)
 prospect_source = {
     "label": vertical_config["prospect_label"],
     "base_id": vertical_config["prospect_base_id"],
     "table_id": vertical_config["prospect_table_id"],
     "is_disavow": False,
+    "is_database": False,
 }
 
-# Build the set of "prospect data labels" for re-outreach logic
-prospect_data_labels = {vertical_config["prospect_label"]}
+# Build the set of "prospect data labels" for this vertical (used for re-outreach identification)
+current_vertical_prospect_labels = {vertical_config["prospect_label"]}
 
 # Add extra prospect source if it exists (e.g., GDC has Prospect-Data-GDC as secondary)
 extra_prospect_sources = []
 if "extra_prospect" in vertical_config:
-    extra = dict(vertical_config["extra_prospect"])  # copy to avoid mutating config
+    extra = dict(vertical_config["extra_prospect"])
     extra["is_disavow"] = False
+    extra["is_database"] = False
     extra_prospect_sources = [extra]
-    prospect_data_labels.add(extra["label"])
+    current_vertical_prospect_labels.add(extra["label"])
 
-# Include ALL other verticals' prospect bases as dedup sources
-other_prospect_sources = []
+# ---- Build MANDATORY sources (cannot be deselected) ----
+# All other verticals' Prospect-Data bases are mandatory for Rule 1 (no simultaneous outreach)
+mandatory_prospect_sources = []
 for vname, vconfig in VERTICALS.items():
     if vname != selected_vertical:
-        other_prospect_sources.append({
+        mandatory_prospect_sources.append({
             "label": vconfig["prospect_label"],
             "base_id": vconfig["prospect_base_id"],
             "table_id": vconfig["prospect_table_id"],
             "is_disavow": False,
+            "is_database": False,
         })
+        # Include extra prospect sources from other verticals too
+        if "extra_prospect" in vconfig:
+            ep = dict(vconfig["extra_prospect"])
+            ep["is_disavow"] = False
+            ep["is_database"] = False
+            mandatory_prospect_sources.append(ep)
 
-# Combine: extra prospect sources + other verticals + shared sources
-other_sources = extra_prospect_sources + other_prospect_sources + SHARED_SOURCES
+# All Database, Disavow sources are also mandatory
+mandatory_db_sources = [dict(src) for src in DATABASE_SOURCES]
+mandatory_disavow_sources = [dict(src) for src in DISAVOW_SOURCES]
+
+# Combine all mandatory sources (these cannot be unchecked)
+mandatory_sources = (
+    [prospect_source]
+    + extra_prospect_sources
+    + mandatory_prospect_sources
+    + mandatory_db_sources
+    + mandatory_disavow_sources
+)
 
 st.caption(
-    f"`{push_target_label}` is always checked for duplicates. "
-    f"You can include other databases too. Push goes to `{push_target_label}` only. Duplicate-safe."
+    f"`{push_target_label}` is the push target. "
+    f"All Prospect-Data bases, Database/Live Link sources, and Disavow lists are always checked. Push goes to `{push_target_label}` only."
 )
 
-# ---------- Source selection ----------
-st.write("**📊 Deduplication Sources:**")
-st.markdown(f"🔒 **Always checked:** `{prospect_source['label']}` (cannot be deselected)")
+# ---------- Source display (all mandatory, no multiselect) ----------
+st.write("**Deduplication Sources (all mandatory):**")
 
-# Create cleaner labels for multiselect
-options = [s["label"] for s in other_sources]
-option_to_source = {s["label"]: s for s in other_sources}
+# Group sources for display
+with st.expander("View all deduplication sources"):
+    st.markdown(f"**Push Target:** `{prospect_source['label']}`")
+    if extra_prospect_sources:
+        st.markdown(f"**Extra Prospect Source:** `{extra_prospect_sources[0]['label']}`")
 
-selected_labels = st.multiselect(
-    "Select additional Airtable sources to check for duplicates:",
-    options=options,
-    default=options,
-    help=f"These databases will be scanned along with {push_target_label} to remove duplicates before pushing."
-)
+    st.markdown("---")
+    st.markdown("**All Prospect-Data Sources (Rule 1 - no simultaneous outreach):**")
+    for src in mandatory_prospect_sources:
+        st.markdown(f"- `{src['label']}`")
 
-active_sources = [prospect_source] + [option_to_source[label] for label in selected_labels]
+    st.markdown("---")
+    st.markdown("**Database / Live Link Sources (Rules 2 & 4):**")
+    for src in mandatory_db_sources:
+        verticals_str = ", ".join(src.get("verticals", []))
+        same_or_diff = "SAME vertical" if selected_vertical in src.get("verticals", []) else "different vertical"
+        st.markdown(f"- `{src['label']}` ({verticals_str}) - *{same_or_diff}*")
 
-# Show which sources are active
-st.info(f"**Active sources ({len(active_sources)}):** " +
-        " • ".join([f"`{src['label']}`" for src in active_sources]))
+    st.markdown("---")
+    st.markdown("**Disavow / Rejected Lists (always blocked):**")
+    for src in mandatory_disavow_sources:
+        st.markdown(f"- `{src['label']}`")
+
+active_sources = mandatory_sources
+
+st.info(f"**Active sources: {len(active_sources)}** - All sources are mandatory to enforce outreach rules.")
 
 uploaded_file = st.file_uploader(
     "Upload your prospect domains (CSV/Excel)",
@@ -673,108 +779,133 @@ if "Domain" not in df_new.columns:
 raw = df_new["Domain"].dropna().astype(str).tolist()
 new_domains = {d for d in (normalize_domain(x) for x in raw) if d}
 
-st.write(f"📥 Uploaded rows: **{len(raw)}** | After normalization: **{len(new_domains)}**")
+st.write(f"Uploaded rows: **{len(raw)}** | After normalization: **{len(new_domains)}**")
 
-# ---------- Initial dedupe across selected sources ----------
-st.write("**⏰ 12-Month Reuse Policy:**")
-st.caption("Domains older than 12 months are marked as SAFE and can be reused (excluded from duplicate check). **Disavow lists are ALWAYS excluded regardless of age.**")
+# ---------- Display rules ----------
+st.subheader("Active Rules")
+st.markdown("""
+| Rule | Description | Threshold |
+|------|-------------|-----------|
+| **Rule 1** | No builders outreach to same site simultaneously | All Prospect-Data sources checked (mandatory) |
+| **Rule 2** | Live link sites can be reused by same vertical | **12 months** after link confirmed |
+| **Rule 3** | No-result prospects safe for all builders | **3 months** after outreach with no live link |
+| **Rule 4** | Live link sites can be reused by different vertical | **4 months** after link confirmed |
+| **Disavow** | Rejected/disavowed sites never reusable | Always blocked |
+""")
 
-st.write("**🔄 3-Month Re-Outreach Policy:**")
-st.caption(f"Domains found ONLY in {push_target_label} prospect sources that are older than 3 months and not in any other sources are safe for re-outreach.")
+# ---------- Build date tracking labels (all prospect + all database sources) ----------
+date_tracking_labels = tuple(sorted(ALL_PROSPECT_LABELS | ALL_DATABASE_LABELS))
 
-# Convert prospect_data_labels to tuple for caching (sets are unhashable)
-_prospect_labels_tuple = tuple(sorted(prospect_data_labels))
-
+# ---------- Fetch from all sources ----------
 with st.spinner("Fetching existing domains from Airtable..."):
     try:
-        existing, source_counts, safe_domains, domain_to_sources, domain_dates_by_source = fetch_existing_domains(
+        # Use a large threshold (120 months) to fetch ALL domains with their dates.
+        # The smart dedup rules will apply the correct per-source thresholds afterwards.
+        existing, source_counts, safe_domains_raw, domain_to_sources, domain_dates_by_source = fetch_existing_domains(
             active_sources,
             show_progress=True,
-            exclude_old_domains=True,
-            months_threshold=12,
+            exclude_old_domains=False,  # Don't apply blanket age filtering - we do it ourselves
+            months_threshold=120,
             return_source_mapping=True,
-            prospect_data_labels=_prospect_labels_tuple
+            date_tracking_labels=date_tracking_labels,
         )
     except Exception as e:
-        st.error(f"❌ Error fetching domains: {e}")
+        st.error(f"Error fetching domains: {e}")
         logging.error(f"Error in fetch_existing_domains: {e}")
         logging.error(traceback.format_exc())
         existing = set()
         source_counts = {src["label"]: 0 for src in active_sources}
-        safe_domains = {src["label"]: 0 for src in active_sources}
+        safe_domains_raw = {src["label"]: 0 for src in active_sources}
         domain_to_sources = {}
         domain_dates_by_source = {}
 
-# Identify re-outreach candidates (domains in this vertical's Prospect-Data sources only, >3 months old)
-reoutreach_candidates = set()
-if domain_to_sources is not None and domain_dates_by_source is not None and domain_to_sources and domain_dates_by_source:
-    reoutreach_candidates = identify_reoutreach_candidates(
-        new_domains,
+# ---------- Apply smart dedup rules ----------
+if domain_to_sources and domain_dates_by_source is not None:
+    blocked_domains, safe_prospect_3m, safe_db_diff_4m, safe_db_same_12m = apply_smart_dedup_rules(
+        existing,
         domain_to_sources,
         domain_dates_by_source,
-        months_threshold=3,
-        prospect_data_labels=prospect_data_labels,
-        push_target_label=push_target_label
+        selected_vertical,
     )
-    # Remove re-outreach candidates from existing set (they're safe to outreach again)
-    existing = existing - reoutreach_candidates
+else:
+    blocked_domains = existing
+    safe_prospect_3m = set()
+    safe_db_diff_4m = set()
+    safe_db_same_12m = set()
 
-# Calculate totals
+# ---------- Calculate totals ----------
 total_domains = sum(source_counts.values())
-total_safe = sum(safe_domains.values())
-total_active = total_domains - total_safe
+total_blocked = len(blocked_domains)
+total_safe_3m = len(safe_prospect_3m)
+total_safe_4m = len(safe_db_diff_4m)
+total_safe_12m = len(safe_db_same_12m)
 
-# Display detailed breakdown
-st.info(f"📚 **Total domains:** **{total_domains:,}** | **Active (<12 months):** **{total_active:,}** | **🟢 SAFE (12+ months, reusable):** **{total_safe:,}**")
-st.info(f"🔒 **Domains excluded from upload (active duplicates):** **{len(existing):,}**")
-if reoutreach_candidates:
-    st.success(f"🔄 **Re-outreach candidates (3+ months old, only in {selected_vertical} Prospect-Data sources):** **{len(reoutreach_candidates):,}** - These are included in safe-to-outreach list.")
+# ---------- Display results ----------
+st.subheader("Results")
+st.info(f"**Total domains across all sources:** {total_domains:,}")
+st.error(f"**Blocked (active duplicates):** {total_blocked:,}")
 
-with st.expander("📋 View detailed breakdown by source"):
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Rule 2: Same vertical 12m+", f"{total_safe_12m:,}", help="Live link sites older than 12 months, safe for same vertical")
+with col2:
+    st.metric("Rule 3: No-result 3m+", f"{total_safe_3m:,}", help="Prospect-only domains older than 3 months with no live link")
+with col3:
+    st.metric("Rule 4: Diff vertical 4m+", f"{total_safe_4m:,}", help="Live link sites older than 4 months, safe for different vertical")
+
+# Detailed breakdown
+with st.expander("View detailed breakdown by source"):
     permission_issues = []
+
+    st.markdown("**Prospect-Data Sources:**")
     for src in active_sources:
-        count = source_counts.get(src["label"], 0)
-        safe = safe_domains.get(src["label"], 0)
-        is_disavow = src.get("is_disavow", False)
-
-        if is_disavow:
-            # For disavow lists: all domains are excluded, show as "excluded" not "active"
-            disavow_note = " 🚫 DISAVOW (always excluded)"
-            st.write(f"  • **{src['label']}**: {count:,} total (all {count:,} excluded, 0 SAFE){disavow_note}")
-        else:
-            # Regular sources: show active vs SAFE
-            active = count - safe
-            status_msg = f"{count:,} total ({active:,} active, {safe:,} SAFE)"
-
-            # Check if this source returned 0 and might have permission issues
+        if src["label"] in ALL_PROSPECT_LABELS:
+            count = source_counts.get(src["label"], 0)
             if count == 0:
-                status_msg += " ⚠️"
                 permission_issues.append(src["label"])
+                st.write(f"  - **{src['label']}**: {count:,} domains (warning: 0 domains)")
+            else:
+                st.write(f"  - **{src['label']}**: {count:,} domains")
 
-            st.write(f"  • **{src['label']}**: {status_msg}")
+    st.markdown("---")
+    st.markdown("**Database / Live Link Sources:**")
+    for src in active_sources:
+        if src.get("is_database"):
+            count = source_counts.get(src["label"], 0)
+            verticals_str = ", ".join(src.get("verticals", []))
+            same_or_diff = "SAME" if selected_vertical in src.get("verticals", []) else "DIFF"
+            threshold = "12 months" if same_or_diff == "SAME" else "4 months"
+            if count == 0:
+                permission_issues.append(src["label"])
+                st.write(f"  - **{src['label']}** [{same_or_diff}, {threshold}]: {count:,} domains (warning: 0 domains)")
+            else:
+                st.write(f"  - **{src['label']}** [{same_or_diff}, {threshold}]: {count:,} domains")
+
+    st.markdown("---")
+    st.markdown("**Disavow / Rejected Sources:**")
+    for src in active_sources:
+        if src.get("is_disavow"):
+            count = source_counts.get(src["label"], 0)
+            st.write(f"  - **{src['label']}**: {count:,} domains (always blocked)")
 
     # Show permission warning if any sources have issues
     if permission_issues:
-        st.warning(f"⚠️ **Permission Issue Detected:** {', '.join(permission_issues)} returned 0 domains.")
-        with st.expander("🔧 Troubleshooting Steps"):
-            st.write("**If the base shows access in Airtable token settings but still returns 403:**")
-            st.write("")
+        st.warning(f"**Permission Issue Detected:** {', '.join(permission_issues)} returned 0 domains.")
+        with st.expander("Troubleshooting Steps"):
             st.write("**Most Common Causes:**")
-            st.write("1. **Missing Scope:** Token needs `data.records:read` scope (not just `schema.bases:read`)")
-            st.write("2. **Workspace Mismatch:** The database might be in a different workspace than the token has access to")
-            st.write("3. **Token Mismatch:** Token in Streamlit secrets might be different from the one you're editing")
+            st.write("1. **Missing Scope:** Token needs `data.records:read` scope")
+            st.write("2. **Workspace Mismatch:** Database might be in a different workspace")
+            st.write("3. **Token Mismatch:** Token in Streamlit secrets might differ from configured one")
             st.write("")
             st.write("**Quick Fixes:**")
-            st.write("1. In Airtable token settings, ensure `data.records:read` scope is enabled (check the box)")
+            st.write("1. In Airtable token settings, ensure `data.records:read` scope is enabled")
             st.write("2. Verify the database is in the same workspace as other bases")
             st.write("3. Click 'Save changes' in Airtable token settings")
             st.write("4. Wait 10-30 seconds for changes to propagate")
-            st.write("")
 
-            # Test access for problematic bases
             for src in active_sources:
                 if src["label"] in permission_issues:
-                    st.write(f"**🔍 Testing {src['label']}:**")
+                    st.write(f"**Testing {src['label']}:**")
                     with st.spinner(f"Testing access to {src['label']}..."):
                         success, msg = test_base_access(src["base_id"], src["table_id"])
                         if success:
@@ -782,22 +913,31 @@ with st.expander("📋 View detailed breakdown by source"):
                         else:
                             st.error(msg)
                             st.code(f"Base ID: {src['base_id']}\nTable ID: {src['table_id']}")
-                            st.write("**Next Steps:**")
-                            st.write("- Check if `data.records:read` scope is enabled in token settings")
-                            st.write("- Verify the base is in the same workspace as other working bases")
-                            st.write("- Try creating a new token with all scopes enabled")
 
-new_to_outreach = sorted(d for d in new_domains if d not in existing)
-reoutreach_in_list = len([d for d in new_to_outreach if d in reoutreach_candidates])
-if reoutreach_in_list > 0:
-    st.success(f"✅ {len(new_to_outreach)} new domains currently safe to outreach (pre-push check).")
-    st.info(f"📊 **Breakdown:** {len(new_to_outreach) - reoutreach_in_list:,} completely new domains + {reoutreach_in_list:,} re-outreach candidates (3+ months old, only in {selected_vertical} Prospect-Data sources).")
-else:
-    st.success(f"✅ {len(new_to_outreach)} new domains currently safe to outreach (pre-push check).")
+# ---------- Filter uploaded domains ----------
+new_to_outreach = sorted(d for d in new_domains if d not in blocked_domains)
+
+# Categorize safe domains that are in the upload
+reoutreach_3m_in_list = [d for d in new_to_outreach if d in safe_prospect_3m]
+reoutreach_4m_in_list = [d for d in new_to_outreach if d in safe_db_diff_4m]
+reoutreach_12m_in_list = [d for d in new_to_outreach if d in safe_db_same_12m]
+completely_new = [d for d in new_to_outreach if d not in safe_prospect_3m and d not in safe_db_diff_4m and d not in safe_db_same_12m]
+
+st.success(f"**{len(new_to_outreach)}** domains safe to outreach (pre-push check).")
+
+if reoutreach_3m_in_list or reoutreach_4m_in_list or reoutreach_12m_in_list:
+    st.markdown("**Breakdown:**")
+    st.write(f"- **{len(completely_new):,}** completely new domains")
+    if reoutreach_3m_in_list:
+        st.write(f"- **{len(reoutreach_3m_in_list):,}** re-outreach candidates (Rule 3: no live link after 3+ months)")
+    if reoutreach_4m_in_list:
+        st.write(f"- **{len(reoutreach_4m_in_list):,}** available from different vertical (Rule 4: live link 4+ months ago)")
+    if reoutreach_12m_in_list:
+        st.write(f"- **{len(reoutreach_12m_in_list):,}** available from same vertical (Rule 2: live link 12+ months ago)")
 
 df_result = pd.DataFrame({"Domain": new_to_outreach})
 st.dataframe(df_result, use_container_width=True)
-st.download_button("⬇️ Download Prospects (CSV)", df_result.to_csv(index=False), "prospects.csv")
+st.download_button("Download Prospects (CSV)", df_result.to_csv(index=False), "prospects.csv")
 
 # ---------- Push to selected vertical's Prospect-Data base (duplicate-safe) ----------
 if new_to_outreach:
@@ -806,33 +946,39 @@ if new_to_outreach:
         st.session_state[pushed_key] = False
     disabled = st.session_state[pushed_key]
 
-    st.write(f"Target for push → **{push_target_label}** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
-    if st.button(f"📤 Push {len(new_to_outreach)} Prospects to Airtable (duplicate-safe)", disabled=disabled):
+    st.write(f"Target for push: **{push_target_label}** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
+    if st.button(f"Push {len(new_to_outreach)} Prospects to Airtable (duplicate-safe)", disabled=disabled):
         with st.spinner("Re-checking latest records and creating new ones..."):
+            # CLEAR CACHE before re-check to get fresh data (fixes stale cache bug)
+            fetch_existing_domains.clear()
+
             latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source = fetch_existing_domains(
                 active_sources,
-                exclude_old_domains=True,
-                months_threshold=12,
+                exclude_old_domains=False,
+                months_threshold=120,
                 return_source_mapping=True,
-                prospect_data_labels=_prospect_labels_tuple
+                date_tracking_labels=date_tracking_labels,
             )
-            # Re-identify re-outreach candidates with latest data
-            latest_reoutreach = set()
-            if latest_domain_to_sources is not None and latest_domain_dates_by_source is not None and latest_domain_to_sources and latest_domain_dates_by_source:
-                latest_reoutreach = identify_reoutreach_candidates(
-                    set(new_to_outreach),
+
+            # Re-apply smart rules with fresh data
+            if latest_domain_to_sources and latest_domain_dates_by_source is not None:
+                latest_blocked, _, _, _ = apply_smart_dedup_rules(
+                    latest_existing,
                     latest_domain_to_sources,
                     latest_domain_dates_by_source,
-                    months_threshold=3,
-                    prospect_data_labels=prospect_data_labels,
-                    push_target_label=push_target_label
+                    selected_vertical,
                 )
-                # Remove re-outreach candidates from latest_existing
-                latest_existing = latest_existing - latest_reoutreach
-            to_push = [d for d in new_to_outreach if d not in latest_existing]
+            else:
+                latest_blocked = latest_existing
+
+            to_push = [d for d in new_to_outreach if d not in latest_blocked]
 
             if len(to_push) < len(new_to_outreach):
-                st.warning(f"⚠️ {len(new_to_outreach) - len(to_push)} domains were added by another process. Only {len(to_push)} will be pushed.")
+                st.warning(f"{len(new_to_outreach) - len(to_push)} domains were added by another process. Only {len(to_push)} will be pushed.")
+
+            # Identify which domains in to_push are re-outreach (already exist in push target)
+            # vs completely new (need to be created)
+            reoutreach_set = safe_prospect_3m | safe_db_diff_4m | safe_db_same_12m
 
             created = 0
             updated = 0
@@ -847,8 +993,7 @@ if new_to_outreach:
             for idx, d in enumerate(to_push):
                 exists, record_id = domain_exists_in_prospect(d, push_table)
 
-                # Check if this is a re-outreach candidate
-                is_reoutreach = d in latest_reoutreach
+                is_reoutreach = d in reoutreach_set
 
                 if exists:
                     if is_reoutreach and record_id:
@@ -866,7 +1011,6 @@ if new_to_outreach:
                             error_details.append(f"{d} (update): {str(e)}")
                             logging.error(f"Error updating record for {d}: {e}")
                     else:
-                        # Skip domains that exist but aren't re-outreach candidates
                         skipped += 1
                 else:
                     # Create new record
@@ -884,7 +1028,6 @@ if new_to_outreach:
                         error_details.append(f"{d}: {str(e)}")
                         logging.error(f"Error creating record for {d}: {e}")
 
-                # Update progress
                 if total > 0:
                     progress_bar.progress((idx + 1) / total)
 
@@ -892,18 +1035,18 @@ if new_to_outreach:
             st.session_state[pushed_key] = True
 
             # Show results
-            result_parts = [f"✅ **Created:** {created}"]
+            result_parts = [f"**Created:** {created}"]
             if updated > 0:
-                result_parts.append(f"🔄 **Updated (re-outreach):** {updated}")
+                result_parts.append(f"**Updated (re-outreach):** {updated}")
             if skipped > 0:
-                result_parts.append(f"⏭️ **Skipped (already existed):** {skipped}")
+                result_parts.append(f"**Skipped (already existed):** {skipped}")
             if errors > 0:
-                result_parts.append(f"⚠️ **Errors:** {errors}")
-            st.success("  •  ".join(result_parts))
+                result_parts.append(f"**Errors:** {errors}")
+            st.success("  |  ".join(result_parts))
 
             if errors > 0 and error_details:
-                with st.expander("⚠️ View error details"):
-                    for err in error_details[:10]:  # Show first 10 errors
+                with st.expander("View error details"):
+                    for err in error_details[:10]:
                         st.text(err)
                     if len(error_details) > 10:
                         st.text(f"... and {len(error_details) - 10} more errors")
