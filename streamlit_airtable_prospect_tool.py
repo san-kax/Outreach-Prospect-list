@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import time
@@ -292,10 +293,10 @@ def fetch_single_source(
     months_threshold: int,
     return_domain_dates: bool = False,
     date_tracking_labels: set[str] | None = None,
-) -> tuple[str, set[str], int, int, str | None, dict[str, datetime] | None]:
+) -> tuple[str, set[str], int, int, str | None, dict[str, datetime] | None, dict[str, str] | None]:
     """Fetch domains from a single Airtable source.
 
-    Returns (label, domains_set, count, safe_count, field_used, domain_dates_dict).
+    Returns (label, domains_set, count, safe_count, field_used, domain_dates_dict, domain_added_by_dict).
 
     Args:
         return_domain_dates: If True, also return a dict mapping domain -> date for tracked sources
@@ -310,10 +311,11 @@ def fetch_single_source(
         # Try to fetch only needed fields for better performance
         possible_domain_fields = ["Domain", "domain", "A Domain", "Live Link", "Referring page URL"]
         possible_date_fields = ["Date", "date", "Added Date", "Publication Date", "Created Date", "First seen", "Last seen"]
+        possible_added_by_fields = ["Added By Name", "Added by Name", "Added by name"]
 
         # First, try fetching with specific fields (faster)
         try:
-            all_fields_to_fetch = list(set(possible_domain_fields + possible_date_fields))
+            all_fields_to_fetch = list(set(possible_domain_fields + possible_date_fields + possible_added_by_fields))
             records = table.all(fields=all_fields_to_fetch)
         except Exception as e1:
             error_str = str(e1)
@@ -331,6 +333,7 @@ def fetch_single_source(
 
         domains_set: set[str] = set()
         domain_dates: dict[str, datetime] = {}
+        domain_added_by: dict[str, str] = {}
         count = 0
         safe_count = 0
         domain_field_found = None
@@ -397,6 +400,13 @@ def fetch_single_source(
                             parsed_date = make_tz_naive(parsed_date)
                             domain_dates[d] = parsed_date
 
+                # Store "Added By Name" for tracked sources
+                if return_domain_dates and should_track_dates:
+                    for abf in possible_added_by_fields:
+                        if abf in fields and fields[abf]:
+                            domain_added_by[d] = str(fields[abf]).strip()
+                            break
+
                 # Disavow lists: ALWAYS exclude, no age exception
                 if is_disavow_list:
                     domains_set.add(d)
@@ -410,7 +420,11 @@ def fetch_single_source(
         if count == 0 and fields_logged:
             logging.warning(f"{src['label']} returned 0 domains - available fields: {list(fields.keys())}")
 
-        return (src["label"], domains_set, count, safe_count, domain_field_found, domain_dates if return_domain_dates and should_track_dates else None)
+        return (
+            src["label"], domains_set, count, safe_count, domain_field_found,
+            domain_dates if return_domain_dates and should_track_dates else None,
+            domain_added_by if return_domain_dates and should_track_dates else None,
+        )
 
     except Exception as e:
         error_str = str(e)
@@ -419,7 +433,7 @@ def fetch_single_source(
         else:
             logging.error(f"Error fetching from {src['label']} ({src['base_id']}): {e}")
             logging.error(traceback.format_exc())
-        return (src["label"], set(), 0, 0, None, None)
+        return (src["label"], set(), 0, 0, None, None, None)
 
 
 @st.cache_data(ttl=300)
@@ -430,7 +444,7 @@ def fetch_existing_domains(
     months_threshold: int = 12,
     return_source_mapping: bool = False,
     date_tracking_labels: tuple[str, ...] = (),
-) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, set[str]] | None, dict[str, dict[str, datetime]] | None]:
+) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, set[str]] | None, dict[str, dict[str, datetime]] | None, dict[str, dict[str, str]] | None]:
     """Read 'Domain' from all selected bases/tables and return a unified normalized set.
 
     Uses parallel processing to fetch from multiple sources simultaneously for better performance.
@@ -440,17 +454,18 @@ def fetch_existing_domains(
         show_progress: Whether to log progress
         exclude_old_domains: If True, exclude domains older than months_threshold (SAFE to reuse)
         months_threshold: Number of months after which a domain is considered SAFE to reuse
-        return_source_mapping: If True, also return domain_to_sources mapping and domain_dates_by_source
+        return_source_mapping: If True, also return domain_to_sources mapping, domain_dates_by_source, and domain_added_by_source
         date_tracking_labels: Tuple of labels for which to track domain dates
 
     Returns:
-        tuple: (all_domains_set, source_counts_dict, safe_domains_dict, domain_to_sources, domain_dates_by_source)
+        tuple: (all_domains_set, source_counts_dict, safe_domains_dict, domain_to_sources, domain_dates_by_source, domain_added_by_source)
     """
     all_domains: set[str] = set()
     source_counts: dict[str, int] = {}
     safe_domains: dict[str, int] = {}
     domain_to_sources: dict[str, set[str]] = {} if return_source_mapping else None
     domain_dates_by_source: dict[str, dict[str, datetime]] = {} if return_source_mapping else None
+    domain_added_by_source: dict[str, dict[str, str]] = {} if return_source_mapping else None
     _date_labels_set = set(date_tracking_labels)
 
     # Process sources in parallel for better performance
@@ -462,7 +477,7 @@ def fetch_existing_domains(
 
         for future in as_completed(future_to_source):
             result = future.result()
-            label, domains_set, count, safe_count, field_used, domain_dates = result
+            label, domains_set, count, safe_count, field_used, domain_dates, domain_added_by = result
             all_domains.update(domains_set)
             source_counts[label] = count
             safe_domains[label] = safe_count
@@ -478,12 +493,16 @@ def fetch_existing_domains(
                 if domain_dates:
                     domain_dates_by_source[label] = domain_dates
 
+                # Store "Added By Name" for tracked sources
+                if domain_added_by:
+                    domain_added_by_source[label] = domain_added_by
+
             if show_progress:
                 active = count - safe_count
                 field_info = f" (using field: {field_used})" if field_used else ""
                 logging.info(f"Fetched {count:,} domains from {label} - {active:,} active, {safe_count:,} SAFE{field_info}")
 
-    return all_domains, source_counts, safe_domains, domain_to_sources, domain_dates_by_source
+    return all_domains, source_counts, safe_domains, domain_to_sources, domain_dates_by_source, domain_added_by_source
 
 
 def apply_smart_dedup_rules(
@@ -613,6 +632,130 @@ def apply_smart_dedup_rules(
     final_blocked = all_domains - all_safe
 
     return final_blocked, safe_prospect_3m, safe_db_diff_vertical_4m, safe_db_same_vertical_12m
+
+
+def build_blocked_details(
+    blocked_domains_from_upload: list[str],
+    domain_to_sources: dict[str, set[str]],
+    domain_dates_by_source: dict[str, dict[str, datetime]],
+    domain_added_by_source: dict[str, dict[str, str]],
+    current_user_name: str,
+) -> pd.DataFrame:
+    """Build a detailed DataFrame for blocked domains showing why each is blocked.
+
+    For each blocked domain from the user's upload, shows:
+    - Domain
+    - Found In: "Live Links" for database sources, "Prospect Data" for prospect sources, "Disavow/Rejected" for disavow
+    - Date Added: the date it was added (if available)
+    - Added By: who added it
+    - Status: "You" if current user, "Another team member (Name)" otherwise, or "Disavowed" for disavow
+
+    Args:
+        blocked_domains_from_upload: List of blocked domains that were in the user's upload
+        domain_to_sources: Dict mapping domain -> set of source labels
+        domain_dates_by_source: Dict mapping source label -> dict(domain -> date)
+        domain_added_by_source: Dict mapping source label -> dict(domain -> added_by_name)
+        current_user_name: The current user's name for comparison
+
+    Returns:
+        pd.DataFrame with columns: Domain, Found In, Date Added, Added By, Status
+    """
+    rows = []
+    current_user_lower = current_user_name.strip().lower() if current_user_name else ""
+
+    for domain in sorted(blocked_domains_from_upload):
+        sources = domain_to_sources.get(domain, set())
+        if not sources:
+            rows.append({
+                "Domain": domain,
+                "Found In": "Unknown source",
+                "Date Added": "",
+                "Added By": "",
+                "Status": "",
+            })
+            continue
+
+        # For each source the domain appears in, create a detail row
+        # Group by source type for cleaner output
+        in_disavow = sources.intersection(ALL_DISAVOW_LABELS)
+        in_database = sources.intersection(ALL_DATABASE_LABELS)
+        in_prospect = sources.intersection(ALL_PROSPECT_LABELS)
+
+        # Disavow - always show first (highest priority block reason)
+        if in_disavow:
+            rows.append({
+                "Domain": domain,
+                "Found In": "Disavow / Rejected",
+                "Date Added": "",
+                "Added By": "",
+                "Status": "Permanently blocked",
+            })
+            continue  # Don't show other sources if disavowed
+
+        # Database (Live Links) - user asked to simply say "Live Links"
+        if in_database:
+            # Find the most recent date and who added it across all database sources
+            most_recent_date = None
+            added_by = ""
+            for db_label in in_database:
+                if db_label in domain_dates_by_source and domain in domain_dates_by_source[db_label]:
+                    d_date = domain_dates_by_source[db_label][domain]
+                    if most_recent_date is None or d_date > most_recent_date:
+                        most_recent_date = d_date
+                if db_label in domain_added_by_source and domain in domain_added_by_source[db_label]:
+                    added_by = domain_added_by_source[db_label][domain]
+
+            date_str = most_recent_date.strftime("%d/%m/%Y") if most_recent_date else ""
+            status = ""
+            if added_by:
+                if added_by.strip().lower() == current_user_lower:
+                    status = "You"
+                else:
+                    status = f"Another team member ({added_by})"
+
+            rows.append({
+                "Domain": domain,
+                "Found In": "Live Links",
+                "Date Added": date_str,
+                "Added By": added_by,
+                "Status": status,
+            })
+
+        # Prospect Data
+        if in_prospect:
+            # Find the most recent date and who added it across all prospect sources
+            most_recent_date = None
+            added_by = ""
+            source_label_display = ""
+            for p_label in in_prospect:
+                if p_label in domain_dates_by_source and domain in domain_dates_by_source[p_label]:
+                    d_date = domain_dates_by_source[p_label][domain]
+                    if most_recent_date is None or d_date > most_recent_date:
+                        most_recent_date = d_date
+                        source_label_display = p_label
+                if p_label in domain_added_by_source and domain in domain_added_by_source[p_label]:
+                    added_by = domain_added_by_source[p_label][domain]
+
+            date_str = most_recent_date.strftime("%d/%m/%Y") if most_recent_date else ""
+            status = ""
+            if added_by:
+                if added_by.strip().lower() == current_user_lower:
+                    status = "You"
+                else:
+                    status = f"Another team member ({added_by})"
+
+            rows.append({
+                "Domain": domain,
+                "Found In": "Prospect Data",
+                "Date Added": date_str,
+                "Added By": added_by,
+                "Status": status,
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=["Domain", "Found In", "Date Added", "Added By", "Status"])
+
+    return pd.DataFrame(rows)
 
 
 def _escape_for_formula(val: str) -> str:
@@ -801,7 +944,7 @@ with st.spinner("Fetching existing domains from Airtable..."):
     try:
         # Use a large threshold (120 months) to fetch ALL domains with their dates.
         # The smart dedup rules will apply the correct per-source thresholds afterwards.
-        existing, source_counts, safe_domains_raw, domain_to_sources, domain_dates_by_source = fetch_existing_domains(
+        existing, source_counts, safe_domains_raw, domain_to_sources, domain_dates_by_source, domain_added_by_source = fetch_existing_domains(
             active_sources,
             show_progress=True,
             exclude_old_domains=False,  # Don't apply blanket age filtering - we do it ourselves
@@ -818,6 +961,7 @@ with st.spinner("Fetching existing domains from Airtable..."):
         safe_domains_raw = {src["label"]: 0 for src in active_sources}
         domain_to_sources = {}
         domain_dates_by_source = {}
+        domain_added_by_source = {}
 
 # ---------- Apply smart dedup rules ----------
 if domain_to_sources and domain_dates_by_source is not None:
@@ -916,6 +1060,7 @@ with st.expander("View detailed breakdown by source"):
 
 # ---------- Filter uploaded domains ----------
 new_to_outreach = sorted(d for d in new_domains if d not in blocked_domains)
+blocked_from_upload = sorted(d for d in new_domains if d in blocked_domains)
 
 # Categorize safe domains that are in the upload
 reoutreach_3m_in_list = [d for d in new_to_outreach if d in safe_prospect_3m]
@@ -923,10 +1068,20 @@ reoutreach_4m_in_list = [d for d in new_to_outreach if d in safe_db_diff_4m]
 reoutreach_12m_in_list = [d for d in new_to_outreach if d in safe_db_same_12m]
 completely_new = [d for d in new_to_outreach if d not in safe_prospect_3m and d not in safe_db_diff_4m and d not in safe_db_same_12m]
 
-st.success(f"**{len(new_to_outreach)}** domains safe to outreach (pre-push check).")
+# Build blocked domains detail DataFrame
+df_blocked_details = build_blocked_details(
+    blocked_from_upload,
+    domain_to_sources,
+    domain_dates_by_source,
+    domain_added_by_source or {},
+    user_name,
+)
+
+# ---------- Summary ----------
+st.success(f"**{len(new_to_outreach)}** domains safe to outreach  |  **{len(blocked_from_upload)}** blocked")
 
 if reoutreach_3m_in_list or reoutreach_4m_in_list or reoutreach_12m_in_list:
-    st.markdown("**Breakdown:**")
+    st.markdown("**Safe-to-outreach breakdown:**")
     st.write(f"- **{len(completely_new):,}** completely new domains")
     if reoutreach_3m_in_list:
         st.write(f"- **{len(reoutreach_3m_in_list):,}** re-outreach candidates (Rule 3: no live link after 3+ months)")
@@ -935,9 +1090,48 @@ if reoutreach_3m_in_list or reoutreach_4m_in_list or reoutreach_12m_in_list:
     if reoutreach_12m_in_list:
         st.write(f"- **{len(reoutreach_12m_in_list):,}** available from same vertical (Rule 2: live link 12+ months ago)")
 
-df_result = pd.DataFrame({"Domain": new_to_outreach})
-st.dataframe(df_result, use_container_width=True)
-st.download_button("Download Prospects (CSV)", df_result.to_csv(index=False), "prospects.csv")
+# ---------- Two-sheet display: tabs ----------
+tab_safe, tab_blocked = st.tabs([
+    f"✅ Safe to Outreach ({len(new_to_outreach)})",
+    f"🚫 Blocked Domains ({len(blocked_from_upload)})",
+])
+
+with tab_safe:
+    df_result = pd.DataFrame({"Domain": new_to_outreach})
+    st.dataframe(df_result, use_container_width=True)
+    st.download_button(
+        "Download Safe Domains (CSV)",
+        df_result.to_csv(index=False),
+        "safe_to_outreach.csv",
+        key="dl_safe",
+    )
+
+with tab_blocked:
+    if len(df_blocked_details) > 0:
+        st.dataframe(df_blocked_details, use_container_width=True)
+        st.download_button(
+            "Download Blocked Domains (CSV)",
+            df_blocked_details.to_csv(index=False),
+            "blocked_domains.csv",
+            key="dl_blocked",
+        )
+    else:
+        st.info("No blocked domains found — all your uploaded domains are safe to outreach!")
+
+# ---------- Download both sheets as Excel ----------
+if len(new_to_outreach) > 0 or len(blocked_from_upload) > 0:
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        df_result.to_excel(writer, sheet_name="Safe to Outreach", index=False)
+        df_blocked_details.to_excel(writer, sheet_name="Blocked Domains", index=False)
+    excel_buffer.seek(0)
+    st.download_button(
+        "📥 Download Full Report (Excel - both sheets)",
+        excel_buffer,
+        "prospect_report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_excel",
+    )
 
 # ---------- Push to selected vertical's Prospect-Data base (duplicate-safe) ----------
 if new_to_outreach:
@@ -952,7 +1146,7 @@ if new_to_outreach:
             # CLEAR CACHE before re-check to get fresh data (fixes stale cache bug)
             fetch_existing_domains.clear()
 
-            latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source = fetch_existing_domains(
+            latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source, _ = fetch_existing_domains(
                 active_sources,
                 exclude_old_domains=False,
                 months_threshold=120,
