@@ -604,11 +604,7 @@ def apply_smart_dedup_rules(
                             most_recent_db_date = d_date
 
             if most_recent_db_date is None:
-                # No date found - treat as old/safe (conservative: allow reuse)
-                if is_same_vertical_db:
-                    safe_db_same_vertical_12m.add(domain)
-                elif is_diff_vertical_db:
-                    safe_db_diff_vertical_4m.add(domain)
+                # No date found - cannot verify age, keep blocked (safe default)
                 continue
 
             # Rule 2: Same vertical, 12+ months old -> safe
@@ -702,8 +698,13 @@ def build_blocked_details(
                     d_date = domain_dates_by_source[db_label][domain]
                     if most_recent_date is None or d_date > most_recent_date:
                         most_recent_date = d_date
-                if db_label in domain_added_by_source and domain in domain_added_by_source[db_label]:
-                    added_by = domain_added_by_source[db_label][domain]
+                        # Only update added_by when we find a more recent date
+                        if db_label in domain_added_by_source and domain in domain_added_by_source[db_label]:
+                            added_by = domain_added_by_source[db_label][domain]
+                elif not added_by:
+                    # Fallback: use added_by from any source if no date available
+                    if db_label in domain_added_by_source and domain in domain_added_by_source[db_label]:
+                        added_by = domain_added_by_source[db_label][domain]
 
             date_str = most_recent_date.strftime("%d/%m/%Y") if most_recent_date else ""
             status = ""
@@ -733,8 +734,13 @@ def build_blocked_details(
                     if most_recent_date is None or d_date > most_recent_date:
                         most_recent_date = d_date
                         source_label_display = p_label
-                if p_label in domain_added_by_source and domain in domain_added_by_source[p_label]:
-                    added_by = domain_added_by_source[p_label][domain]
+                        # Only update added_by when we find a more recent date
+                        if p_label in domain_added_by_source and domain in domain_added_by_source[p_label]:
+                            added_by = domain_added_by_source[p_label][domain]
+                elif not added_by:
+                    # Fallback: use added_by from any source if no date available
+                    if p_label in domain_added_by_source and domain in domain_added_by_source[p_label]:
+                        added_by = domain_added_by_source[p_label][domain]
 
             date_str = most_recent_date.strftime("%d/%m/%Y") if most_recent_date else ""
             status = ""
