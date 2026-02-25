@@ -953,29 +953,125 @@ active_sources = mandatory_sources
 
 st.info(f"**Active sources: {len(active_sources)}** - All sources are mandatory to enforce outreach rules.")
 
-uploaded_file = st.file_uploader(
-    "Upload your prospect domains (CSV/Excel)",
-    type=["csv", "xlsx", "xls", "xlsm"]
-)
-if not uploaded_file:
-    st.stop()
+# ---------- Build date tracking labels (shared between both tabs) ----------
+date_tracking_labels = tuple(sorted(ALL_PROSPECT_LABELS | ALL_DATABASE_LABELS))
 
-# ---------- Read and normalize upload ----------
-with st.spinner("Reading file..."):
-    df_new = read_uploaded_table(uploaded_file)
+# ---------- Main tabs ----------
+tab_quick, tab_full = st.tabs(["🔍 Quick Domain Check", "📋 Full Upload & Push"])
 
-if "Domain" not in df_new.columns:
-    st.error("Your file must have a 'Domain' column.")
-    st.stop()
+# ===================== TAB 1: QUICK CHECK =====================
+with tab_quick:
+    st.subheader("Quick Domain Check")
+    st.caption("Instantly check if a domain is safe to outreach — no CSV upload or push needed.")
 
-raw = df_new["Domain"].dropna().astype(str).tolist()
-new_domains = {d for d in (normalize_domain(x) for x in raw) if d}
+    check_mode = st.radio(
+        "Input mode:",
+        ["Single domain", "Multiple domains (paste)"],
+        horizontal=True,
+        key="quick_check_mode",
+    )
 
-st.write(f"Uploaded rows: **{len(raw)}** | After normalization: **{len(new_domains)}**")
+    domains_to_check: list[str] = []
+    if check_mode == "Single domain":
+        domain_input = st.text_input(
+            "Enter domain:",
+            placeholder="e.g. example.com",
+            key="single_domain_input",
+        )
+        if domain_input.strip():
+            domains_to_check = [domain_input.strip()]
+    else:
+        domains_text = st.text_area(
+            "Paste domains (one per line):",
+            placeholder="example.com\ntest.co.uk\nanother-site.com",
+            height=150,
+            key="multi_domain_input",
+        )
+        if domains_text.strip():
+            domains_to_check = [d.strip() for d in domains_text.strip().splitlines() if d.strip()]
 
-# ---------- Display rules ----------
-st.subheader("Active Rules")
-st.markdown("""
+    btn_label = (
+        f"Check {len(domains_to_check)} domain{'s' if len(domains_to_check) != 1 else ''}"
+        if domains_to_check else "Check"
+    )
+    check_clicked = st.button(btn_label, disabled=not domains_to_check, key="quick_check_btn")
+
+    if check_clicked and domains_to_check:
+        with st.spinner("Fetching Airtable data (uses cache — fast after first load)..."):
+            try:
+                qc_existing, _, _, qc_d2s, qc_dates, qc_addedby = fetch_existing_domains(
+                    active_sources,
+                    show_progress=False,
+                    exclude_old_domains=False,
+                    months_threshold=120,
+                    return_source_mapping=True,
+                    date_tracking_labels=date_tracking_labels,
+                )
+            except Exception as e:
+                st.error(f"Error fetching data: {e}")
+                qc_existing, qc_d2s, qc_dates, qc_addedby = set(), {}, {}, {}
+
+        if qc_d2s and qc_dates is not None:
+            qc_blocked, qc_safe_3m, qc_safe_4m, qc_safe_12m = apply_smart_dedup_rules(
+                qc_existing, qc_d2s, qc_dates, selected_vertical,
+            )
+        else:
+            qc_blocked = qc_existing
+            qc_safe_3m = qc_safe_4m = qc_safe_12m = set()
+
+        st.markdown("---")
+        st.subheader(f"Results — {len(domains_to_check)} domain{'s' if len(domains_to_check) != 1 else ''} checked")
+
+        for raw_input in domains_to_check:
+            norm = normalize_domain(raw_input)
+            if not norm:
+                st.warning(f"⚠️ **{raw_input}** — invalid domain, skipped")
+                continue
+
+            if norm in qc_blocked:
+                df_detail = build_blocked_details(
+                    [norm], qc_d2s, qc_dates, qc_addedby or {}, user_name,
+                )
+                st.error(f"🚫 **{norm}** — BLOCKED")
+                st.dataframe(df_detail, use_container_width=True, hide_index=True)
+            else:
+                if norm in qc_safe_12m:
+                    reason = "Rule 2: live link 12+ months ago (same vertical) — safe to re-outreach"
+                elif norm in qc_safe_4m:
+                    reason = "Rule 4: live link 4+ months ago (different vertical) — safe to re-outreach"
+                elif norm in qc_safe_3m:
+                    reason = "Rule 3: prospected 3+ months ago, no live link — safe to re-outreach"
+                else:
+                    reason = "Brand new — not found in any source"
+                st.success(f"✅ **{norm}** — Safe to outreach")
+                st.caption(f"↳ {reason}")
+
+# ===================== TAB 2: FULL UPLOAD & PUSH =====================
+with tab_full:
+    uploaded_file = st.file_uploader(
+        "Upload your prospect domains (CSV/Excel)",
+        type=["csv", "xlsx", "xls", "xlsm"],
+        key="main_uploader",
+    )
+
+    if not uploaded_file:
+        st.info("Upload a CSV or Excel file with a 'Domain' column to get started.")
+    else:
+        # ---------- Read and normalize upload ----------
+        with st.spinner("Reading file..."):
+            df_new = read_uploaded_table(uploaded_file)
+
+        if "Domain" not in df_new.columns:
+            st.error("Your file must have a 'Domain' column.")
+        else:
+            raw = df_new["Domain"].dropna().astype(str).tolist()
+            new_domains = {d for d in (normalize_domain(x) for x in raw) if d}
+
+            st.write(f"Uploaded rows: **{len(raw)}** | After normalization: **{len(new_domains)}**")
+
+            # ---------- Display rules ----------
+            st.subheader("Active Rules")
+            st.markdown("""
 | Rule | Description | Threshold |
 |------|-------------|-----------|
 | **Rule 1** | No builders outreach to same site simultaneously | All Prospect-Data sources checked (mandatory) |
@@ -985,311 +1081,298 @@ st.markdown("""
 | **Disavow** | Rejected/disavowed sites never reusable | Always blocked |
 """)
 
-# ---------- Build date tracking labels (all prospect + all database sources) ----------
-date_tracking_labels = tuple(sorted(ALL_PROSPECT_LABELS | ALL_DATABASE_LABELS))
+            # ---------- Fetch from all sources ----------
+            with st.spinner("Fetching existing domains from Airtable..."):
+                try:
+                    existing, source_counts, safe_domains_raw, domain_to_sources, domain_dates_by_source, domain_added_by_source = fetch_existing_domains(
+                        active_sources,
+                        show_progress=True,
+                        exclude_old_domains=False,
+                        months_threshold=120,
+                        return_source_mapping=True,
+                        date_tracking_labels=date_tracking_labels,
+                    )
+                except Exception as e:
+                    st.error(f"Error fetching domains: {e}")
+                    logging.error(f"Error in fetch_existing_domains: {e}")
+                    logging.error(traceback.format_exc())
+                    existing = set()
+                    source_counts = {src["label"]: 0 for src in active_sources}
+                    safe_domains_raw = {src["label"]: 0 for src in active_sources}
+                    domain_to_sources = {}
+                    domain_dates_by_source = {}
+                    domain_added_by_source = {}
 
-# ---------- Fetch from all sources ----------
-with st.spinner("Fetching existing domains from Airtable..."):
-    try:
-        # Use a large threshold (120 months) to fetch ALL domains with their dates.
-        # The smart dedup rules will apply the correct per-source thresholds afterwards.
-        existing, source_counts, safe_domains_raw, domain_to_sources, domain_dates_by_source, domain_added_by_source = fetch_existing_domains(
-            active_sources,
-            show_progress=True,
-            exclude_old_domains=False,  # Don't apply blanket age filtering - we do it ourselves
-            months_threshold=120,
-            return_source_mapping=True,
-            date_tracking_labels=date_tracking_labels,
-        )
-    except Exception as e:
-        st.error(f"Error fetching domains: {e}")
-        logging.error(f"Error in fetch_existing_domains: {e}")
-        logging.error(traceback.format_exc())
-        existing = set()
-        source_counts = {src["label"]: 0 for src in active_sources}
-        safe_domains_raw = {src["label"]: 0 for src in active_sources}
-        domain_to_sources = {}
-        domain_dates_by_source = {}
-        domain_added_by_source = {}
-
-# ---------- Apply smart dedup rules ----------
-if domain_to_sources and domain_dates_by_source is not None:
-    blocked_domains, safe_prospect_3m, safe_db_diff_4m, safe_db_same_12m = apply_smart_dedup_rules(
-        existing,
-        domain_to_sources,
-        domain_dates_by_source,
-        selected_vertical,
-    )
-else:
-    blocked_domains = existing
-    safe_prospect_3m = set()
-    safe_db_diff_4m = set()
-    safe_db_same_12m = set()
-
-# ---------- Calculate totals ----------
-total_domains = sum(source_counts.values())
-total_blocked = len(blocked_domains)
-total_safe_3m = len(safe_prospect_3m)
-total_safe_4m = len(safe_db_diff_4m)
-total_safe_12m = len(safe_db_same_12m)
-
-# ---------- Display results ----------
-st.subheader("Results")
-st.info(f"**Total domains across all sources:** {total_domains:,}")
-st.error(f"**Blocked (active duplicates):** {total_blocked:,}")
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Rule 2: Same vertical 12m+", f"{total_safe_12m:,}", help="Live link sites older than 12 months, safe for same vertical")
-with col2:
-    st.metric("Rule 3: No-result 3m+", f"{total_safe_3m:,}", help="Prospect-only domains older than 3 months with no live link")
-with col3:
-    st.metric("Rule 4: Diff vertical 4m+", f"{total_safe_4m:,}", help="Live link sites older than 4 months, safe for different vertical")
-
-# Detailed breakdown
-with st.expander("View detailed breakdown by source"):
-    permission_issues = []
-
-    st.markdown("**Prospect-Data Sources:**")
-    for src in active_sources:
-        if src["label"] in ALL_PROSPECT_LABELS:
-            count = source_counts.get(src["label"], 0)
-            if count == 0:
-                permission_issues.append(src["label"])
-                st.write(f"  - **{src['label']}**: {count:,} domains (warning: 0 domains)")
-            else:
-                st.write(f"  - **{src['label']}**: {count:,} domains")
-
-    st.markdown("---")
-    st.markdown("**Database / Live Link Sources:**")
-    for src in active_sources:
-        if src.get("is_database"):
-            count = source_counts.get(src["label"], 0)
-            verticals_str = ", ".join(src.get("verticals", []))
-            same_or_diff = "SAME" if selected_vertical in src.get("verticals", []) else "DIFF"
-            threshold = "12 months" if same_or_diff == "SAME" else "4 months"
-            if count == 0:
-                permission_issues.append(src["label"])
-                st.write(f"  - **{src['label']}** [{same_or_diff}, {threshold}]: {count:,} domains (warning: 0 domains)")
-            else:
-                st.write(f"  - **{src['label']}** [{same_or_diff}, {threshold}]: {count:,} domains")
-
-    st.markdown("---")
-    st.markdown("**Disavow / Rejected Sources:**")
-    for src in active_sources:
-        if src.get("is_disavow"):
-            count = source_counts.get(src["label"], 0)
-            st.write(f"  - **{src['label']}**: {count:,} domains (always blocked)")
-
-    # Show permission warning if any sources have issues
-    if permission_issues:
-        st.warning(f"**Permission Issue Detected:** {', '.join(permission_issues)} returned 0 domains.")
-        with st.expander("Troubleshooting Steps"):
-            st.write("**Most Common Causes:**")
-            st.write("1. **Missing Scope:** Token needs `data.records:read` scope")
-            st.write("2. **Workspace Mismatch:** Database might be in a different workspace")
-            st.write("3. **Token Mismatch:** Token in Streamlit secrets might differ from configured one")
-            st.write("")
-            st.write("**Quick Fixes:**")
-            st.write("1. In Airtable token settings, ensure `data.records:read` scope is enabled")
-            st.write("2. Verify the database is in the same workspace as other bases")
-            st.write("3. Click 'Save changes' in Airtable token settings")
-            st.write("4. Wait 10-30 seconds for changes to propagate")
-
-            for src in active_sources:
-                if src["label"] in permission_issues:
-                    st.write(f"**Testing {src['label']}:**")
-                    with st.spinner(f"Testing access to {src['label']}..."):
-                        success, msg = test_base_access(src["base_id"], src["table_id"])
-                        if success:
-                            st.success(msg)
-                        else:
-                            st.error(msg)
-                            st.code(f"Base ID: {src['base_id']}\nTable ID: {src['table_id']}")
-
-# ---------- Filter uploaded domains ----------
-new_to_outreach = sorted(d for d in new_domains if d not in blocked_domains)
-blocked_from_upload = sorted(d for d in new_domains if d in blocked_domains)
-
-# Categorize safe domains that are in the upload
-reoutreach_3m_in_list = [d for d in new_to_outreach if d in safe_prospect_3m]
-reoutreach_4m_in_list = [d for d in new_to_outreach if d in safe_db_diff_4m]
-reoutreach_12m_in_list = [d for d in new_to_outreach if d in safe_db_same_12m]
-completely_new = [d for d in new_to_outreach if d not in safe_prospect_3m and d not in safe_db_diff_4m and d not in safe_db_same_12m]
-
-# Build blocked domains detail DataFrame
-df_blocked_details = build_blocked_details(
-    blocked_from_upload,
-    domain_to_sources,
-    domain_dates_by_source,
-    domain_added_by_source or {},
-    user_name,
-)
-
-# ---------- Summary ----------
-st.success(f"**{len(new_to_outreach)}** domains safe to outreach  |  **{len(blocked_from_upload)}** blocked")
-
-if reoutreach_3m_in_list or reoutreach_4m_in_list or reoutreach_12m_in_list:
-    st.markdown("**Safe-to-outreach breakdown:**")
-    st.write(f"- **{len(completely_new):,}** completely new domains")
-    if reoutreach_3m_in_list:
-        st.write(f"- **{len(reoutreach_3m_in_list):,}** re-outreach candidates (Rule 3: no live link after 3+ months)")
-    if reoutreach_4m_in_list:
-        st.write(f"- **{len(reoutreach_4m_in_list):,}** available from different vertical (Rule 4: live link 4+ months ago)")
-    if reoutreach_12m_in_list:
-        st.write(f"- **{len(reoutreach_12m_in_list):,}** available from same vertical (Rule 2: live link 12+ months ago)")
-
-# ---------- Two-sheet display: tabs ----------
-tab_safe, tab_blocked = st.tabs([
-    f"✅ Safe to Outreach ({len(new_to_outreach)})",
-    f"🚫 Blocked Domains ({len(blocked_from_upload)})",
-])
-
-with tab_safe:
-    df_result = pd.DataFrame({"Domain": new_to_outreach})
-    st.dataframe(df_result, use_container_width=True)
-    st.download_button(
-        "Download Safe Domains (CSV)",
-        df_result.to_csv(index=False),
-        "safe_to_outreach.csv",
-        key="dl_safe",
-    )
-
-with tab_blocked:
-    if len(df_blocked_details) > 0:
-        st.dataframe(df_blocked_details, use_container_width=True)
-        st.download_button(
-            "Download Blocked Domains (CSV)",
-            df_blocked_details.to_csv(index=False),
-            "blocked_domains.csv",
-            key="dl_blocked",
-        )
-    else:
-        st.info("No blocked domains found — all your uploaded domains are safe to outreach!")
-
-# ---------- Download both sheets as Excel ----------
-if len(new_to_outreach) > 0 or len(blocked_from_upload) > 0:
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        df_result.to_excel(writer, sheet_name="Safe to Outreach", index=False)
-        df_blocked_details.to_excel(writer, sheet_name="Blocked Domains", index=False)
-    excel_buffer.seek(0)
-    st.download_button(
-        "📥 Download Full Report (Excel - both sheets)",
-        excel_buffer,
-        "prospect_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dl_excel",
-    )
-
-# ---------- Push to selected vertical's Prospect-Data base (duplicate-safe) ----------
-if new_to_outreach:
-    pushed_key = f"pushed_{selected_vertical}"
-    if pushed_key not in st.session_state:
-        st.session_state[pushed_key] = False
-    disabled = st.session_state[pushed_key]
-
-    st.write(f"Target for push: **{push_target_label}** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
-    if st.button(f"Push {len(new_to_outreach)} Prospects to Airtable (duplicate-safe)", disabled=disabled):
-        with st.spinner("Re-checking latest records and creating new ones..."):
-            # CLEAR CACHE before re-check to get fresh data (fixes stale cache bug)
-            fetch_existing_domains.clear()
-
-            latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source, _ = fetch_existing_domains(
-                active_sources,
-                exclude_old_domains=False,
-                months_threshold=120,
-                return_source_mapping=True,
-                date_tracking_labels=date_tracking_labels,
-            )
-
-            # Re-apply smart rules with fresh data
-            if latest_domain_to_sources and latest_domain_dates_by_source is not None:
-                latest_blocked, _, _, _ = apply_smart_dedup_rules(
-                    latest_existing,
-                    latest_domain_to_sources,
-                    latest_domain_dates_by_source,
+            # ---------- Apply smart dedup rules ----------
+            if domain_to_sources and domain_dates_by_source is not None:
+                blocked_domains, safe_prospect_3m, safe_db_diff_4m, safe_db_same_12m = apply_smart_dedup_rules(
+                    existing,
+                    domain_to_sources,
+                    domain_dates_by_source,
                     selected_vertical,
                 )
             else:
-                latest_blocked = latest_existing
+                blocked_domains = existing
+                safe_prospect_3m = set()
+                safe_db_diff_4m = set()
+                safe_db_same_12m = set()
 
-            to_push = [d for d in new_to_outreach if d not in latest_blocked]
+            # ---------- Calculate totals ----------
+            total_domains = sum(source_counts.values())
+            total_blocked = len(blocked_domains)
+            total_safe_3m = len(safe_prospect_3m)
+            total_safe_4m = len(safe_db_diff_4m)
+            total_safe_12m = len(safe_db_same_12m)
 
-            if len(to_push) < len(new_to_outreach):
-                st.warning(f"{len(new_to_outreach) - len(to_push)} domains were added by another process. Only {len(to_push)} will be pushed.")
+            # ---------- Display results ----------
+            st.subheader("Results")
+            st.info(f"**Total domains across all sources:** {total_domains:,}")
+            st.error(f"**Blocked (active duplicates):** {total_blocked:,}")
 
-            # Identify which domains in to_push are re-outreach (already exist in push target)
-            # vs completely new (need to be created)
-            reoutreach_set = safe_prospect_3m | safe_db_diff_4m | safe_db_same_12m
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Rule 2: Same vertical 12m+", f"{total_safe_12m:,}", help="Live link sites older than 12 months, safe for same vertical")
+            with col2:
+                st.metric("Rule 3: No-result 3m+", f"{total_safe_3m:,}", help="Prospect-only domains older than 3 months with no live link")
+            with col3:
+                st.metric("Rule 4: Diff vertical 4m+", f"{total_safe_4m:,}", help="Live link sites older than 4 months, safe for different vertical")
 
-            created = 0
-            updated = 0
-            skipped = 0
-            errors  = 0
-            error_details = []
-            date_str = datetime.now().strftime("%Y-%m-%d")
+            # Detailed breakdown
+            with st.expander("View detailed breakdown by source"):
+                permission_issues = []
 
-            progress_bar = st.progress(0)
-            total = len(to_push)
+                st.markdown("**Prospect-Data Sources:**")
+                for src in active_sources:
+                    if src["label"] in ALL_PROSPECT_LABELS:
+                        count = source_counts.get(src["label"], 0)
+                        if count == 0:
+                            permission_issues.append(src["label"])
+                            st.write(f"  - **{src['label']}**: {count:,} domains (warning: 0 domains)")
+                        else:
+                            st.write(f"  - **{src['label']}**: {count:,} domains")
 
-            for idx, d in enumerate(to_push):
-                exists, record_id = domain_exists_in_prospect(d, push_table)
+                st.markdown("---")
+                st.markdown("**Database / Live Link Sources:**")
+                for src in active_sources:
+                    if src.get("is_database"):
+                        count = source_counts.get(src["label"], 0)
+                        verticals_str = ", ".join(src.get("verticals", []))
+                        same_or_diff = "SAME" if selected_vertical in src.get("verticals", []) else "DIFF"
+                        threshold = "12 months" if same_or_diff == "SAME" else "4 months"
+                        if count == 0:
+                            permission_issues.append(src["label"])
+                            st.write(f"  - **{src['label']}** [{same_or_diff}, {threshold}]: {count:,} domains (warning: 0 domains)")
+                        else:
+                            st.write(f"  - **{src['label']}** [{same_or_diff}, {threshold}]: {count:,} domains")
 
-                is_reoutreach = d in reoutreach_set
+                st.markdown("---")
+                st.markdown("**Disavow / Rejected Sources:**")
+                for src in active_sources:
+                    if src.get("is_disavow"):
+                        count = source_counts.get(src["label"], 0)
+                        st.write(f"  - **{src['label']}**: {count:,} domains (always blocked)")
 
-                if exists:
-                    if is_reoutreach and record_id:
-                        # Update existing record for re-outreach candidates
-                        try:
-                            push_table.update(record_id, {
-                                "Date": date_str,
-                                "Added By Name": user_name,
-                                "Added By Email": user_email
-                            })
-                            updated += 1
-                            time.sleep(0.05)
-                        except Exception as e:
-                            errors += 1
-                            error_details.append(f"{d} (update): {str(e)}")
-                            logging.error(f"Error updating record for {d}: {e}")
-                    else:
-                        skipped += 1
+                if permission_issues:
+                    st.warning(f"**Permission Issue Detected:** {', '.join(permission_issues)} returned 0 domains.")
+                    with st.expander("Troubleshooting Steps"):
+                        st.write("**Most Common Causes:**")
+                        st.write("1. **Missing Scope:** Token needs `data.records:read` scope")
+                        st.write("2. **Workspace Mismatch:** Database might be in a different workspace")
+                        st.write("3. **Token Mismatch:** Token in Streamlit secrets might differ from configured one")
+                        st.write("")
+                        st.write("**Quick Fixes:**")
+                        st.write("1. In Airtable token settings, ensure `data.records:read` scope is enabled")
+                        st.write("2. Verify the database is in the same workspace as other bases")
+                        st.write("3. Click 'Save changes' in Airtable token settings")
+                        st.write("4. Wait 10-30 seconds for changes to propagate")
+
+                        for src in active_sources:
+                            if src["label"] in permission_issues:
+                                st.write(f"**Testing {src['label']}:**")
+                                with st.spinner(f"Testing access to {src['label']}..."):
+                                    success, msg = test_base_access(src["base_id"], src["table_id"])
+                                    if success:
+                                        st.success(msg)
+                                    else:
+                                        st.error(msg)
+                                        st.code(f"Base ID: {src['base_id']}\nTable ID: {src['table_id']}")
+
+            # ---------- Filter uploaded domains ----------
+            new_to_outreach = sorted(d for d in new_domains if d not in blocked_domains)
+            blocked_from_upload = sorted(d for d in new_domains if d in blocked_domains)
+
+            # Categorize safe domains that are in the upload
+            reoutreach_3m_in_list = [d for d in new_to_outreach if d in safe_prospect_3m]
+            reoutreach_4m_in_list = [d for d in new_to_outreach if d in safe_db_diff_4m]
+            reoutreach_12m_in_list = [d for d in new_to_outreach if d in safe_db_same_12m]
+            completely_new = [d for d in new_to_outreach if d not in safe_prospect_3m and d not in safe_db_diff_4m and d not in safe_db_same_12m]
+
+            # Build blocked domains detail DataFrame
+            df_blocked_details = build_blocked_details(
+                blocked_from_upload,
+                domain_to_sources,
+                domain_dates_by_source,
+                domain_added_by_source or {},
+                user_name,
+            )
+
+            # ---------- Summary ----------
+            st.success(f"**{len(new_to_outreach)}** domains safe to outreach  |  **{len(blocked_from_upload)}** blocked")
+
+            if reoutreach_3m_in_list or reoutreach_4m_in_list or reoutreach_12m_in_list:
+                st.markdown("**Safe-to-outreach breakdown:**")
+                st.write(f"- **{len(completely_new):,}** completely new domains")
+                if reoutreach_3m_in_list:
+                    st.write(f"- **{len(reoutreach_3m_in_list):,}** re-outreach candidates (Rule 3: no live link after 3+ months)")
+                if reoutreach_4m_in_list:
+                    st.write(f"- **{len(reoutreach_4m_in_list):,}** available from different vertical (Rule 4: live link 4+ months ago)")
+                if reoutreach_12m_in_list:
+                    st.write(f"- **{len(reoutreach_12m_in_list):,}** available from same vertical (Rule 2: live link 12+ months ago)")
+
+            # ---------- Two-sheet display: tabs ----------
+            tab_safe, tab_blocked = st.tabs([
+                f"✅ Safe to Outreach ({len(new_to_outreach)})",
+                f"🚫 Blocked Domains ({len(blocked_from_upload)})",
+            ])
+
+            with tab_safe:
+                df_result = pd.DataFrame({"Domain": new_to_outreach})
+                st.dataframe(df_result, use_container_width=True)
+                st.download_button(
+                    "Download Safe Domains (CSV)",
+                    df_result.to_csv(index=False),
+                    "safe_to_outreach.csv",
+                    key="dl_safe",
+                )
+
+            with tab_blocked:
+                if len(df_blocked_details) > 0:
+                    st.dataframe(df_blocked_details, use_container_width=True)
+                    st.download_button(
+                        "Download Blocked Domains (CSV)",
+                        df_blocked_details.to_csv(index=False),
+                        "blocked_domains.csv",
+                        key="dl_blocked",
+                    )
                 else:
-                    # Create new record
-                    try:
-                        push_table.create({
-                            "Domain": d,
-                            "Date": date_str,
-                            "Added By Name": user_name,
-                            "Added By Email": user_email
-                        })
-                        created += 1
-                        time.sleep(0.05)
-                    except Exception as e:
-                        errors += 1
-                        error_details.append(f"{d}: {str(e)}")
-                        logging.error(f"Error creating record for {d}: {e}")
+                    st.info("No blocked domains found — all your uploaded domains are safe to outreach!")
 
-                if total > 0:
-                    progress_bar.progress((idx + 1) / total)
+            # ---------- Download both sheets as Excel ----------
+            if len(new_to_outreach) > 0 or len(blocked_from_upload) > 0:
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                    df_result.to_excel(writer, sheet_name="Safe to Outreach", index=False)
+                    df_blocked_details.to_excel(writer, sheet_name="Blocked Domains", index=False)
+                excel_buffer.seek(0)
+                st.download_button(
+                    "📥 Download Full Report (Excel - both sheets)",
+                    excel_buffer,
+                    "prospect_report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_excel",
+                )
 
-            progress_bar.empty()
-            st.session_state[pushed_key] = True
+            # ---------- Push to selected vertical's Prospect-Data base (duplicate-safe) ----------
+            if new_to_outreach:
+                pushed_key = f"pushed_{selected_vertical}"
+                if pushed_key not in st.session_state:
+                    st.session_state[pushed_key] = False
+                disabled = st.session_state[pushed_key]
 
-            # Show results
-            result_parts = [f"**Created:** {created}"]
-            if updated > 0:
-                result_parts.append(f"**Updated (re-outreach):** {updated}")
-            if skipped > 0:
-                result_parts.append(f"**Skipped (already existed):** {skipped}")
-            if errors > 0:
-                result_parts.append(f"**Errors:** {errors}")
-            st.success("  |  ".join(result_parts))
+                st.write(f"Target for push: **{push_target_label}** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
+                if st.button(f"Push {len(new_to_outreach)} Prospects to Airtable (duplicate-safe)", disabled=disabled):
+                    with st.spinner("Re-checking latest records and creating new ones..."):
+                        # CLEAR CACHE before re-check to get fresh data
+                        fetch_existing_domains.clear()
 
-            if errors > 0 and error_details:
-                with st.expander("View error details"):
-                    for err in error_details[:10]:
-                        st.text(err)
-                    if len(error_details) > 10:
-                        st.text(f"... and {len(error_details) - 10} more errors")
+                        latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source, _ = fetch_existing_domains(
+                            active_sources,
+                            exclude_old_domains=False,
+                            months_threshold=120,
+                            return_source_mapping=True,
+                            date_tracking_labels=date_tracking_labels,
+                        )
+
+                        if latest_domain_to_sources and latest_domain_dates_by_source is not None:
+                            latest_blocked, _, _, _ = apply_smart_dedup_rules(
+                                latest_existing,
+                                latest_domain_to_sources,
+                                latest_domain_dates_by_source,
+                                selected_vertical,
+                            )
+                        else:
+                            latest_blocked = latest_existing
+
+                        to_push = [d for d in new_to_outreach if d not in latest_blocked]
+
+                        if len(to_push) < len(new_to_outreach):
+                            st.warning(f"{len(new_to_outreach) - len(to_push)} domains were added by another process. Only {len(to_push)} will be pushed.")
+
+                        reoutreach_set = safe_prospect_3m | safe_db_diff_4m | safe_db_same_12m
+
+                        created = 0
+                        updated = 0
+                        skipped = 0
+                        errors  = 0
+                        error_details = []
+                        date_str = datetime.now().strftime("%Y-%m-%d")
+
+                        progress_bar = st.progress(0)
+                        total = len(to_push)
+
+                        for idx, d in enumerate(to_push):
+                            exists, record_id = domain_exists_in_prospect(d, push_table)
+                            is_reoutreach = d in reoutreach_set
+
+                            if exists:
+                                if is_reoutreach and record_id:
+                                    try:
+                                        push_table.update(record_id, {
+                                            "Date": date_str,
+                                            "Added By Name": user_name,
+                                            "Added By Email": user_email
+                                        })
+                                        updated += 1
+                                        time.sleep(0.05)
+                                    except Exception as e:
+                                        errors += 1
+                                        error_details.append(f"{d} (update): {str(e)}")
+                                        logging.error(f"Error updating record for {d}: {e}")
+                                else:
+                                    skipped += 1
+                            else:
+                                try:
+                                    push_table.create({
+                                        "Domain": d,
+                                        "Date": date_str,
+                                        "Added By Name": user_name,
+                                        "Added By Email": user_email
+                                    })
+                                    created += 1
+                                    time.sleep(0.05)
+                                except Exception as e:
+                                    errors += 1
+                                    error_details.append(f"{d}: {str(e)}")
+                                    logging.error(f"Error creating record for {d}: {e}")
+
+                            if total > 0:
+                                progress_bar.progress((idx + 1) / total)
+
+                        progress_bar.empty()
+                        st.session_state[pushed_key] = True
+
+                        result_parts = [f"**Created:** {created}"]
+                        if updated > 0:
+                            result_parts.append(f"**Updated (re-outreach):** {updated}")
+                        if skipped > 0:
+                            result_parts.append(f"**Skipped (already existed):** {skipped}")
+                        if errors > 0:
+                            result_parts.append(f"**Errors:** {errors}")
+                        st.success("  |  ".join(result_parts))
+
+                        if errors > 0 and error_details:
+                            with st.expander("View error details"):
+                                for err in error_details[:10]:
+                                    st.text(err)
+                                if len(error_details) > 10:
+                                    st.text(f"... and {len(error_details) - 10} more errors")
