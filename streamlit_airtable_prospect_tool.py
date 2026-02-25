@@ -705,27 +705,41 @@ def build_blocked_details(
 
         # Database (Live Links) - user asked to simply say "Live Links"
         if in_database:
-            # Find the most recent date and who added it across all database sources
+            # Find the most recent date and ALL names added at that date across all database sources
             most_recent_date = None
-            added_by = ""
+            added_by_names: list[str] = []
             for db_label in in_database:
                 if db_label in domain_dates_by_source and domain in domain_dates_by_source[db_label]:
                     d_date = domain_dates_by_source[db_label][domain]
                     if most_recent_date is None or d_date > most_recent_date:
                         most_recent_date = d_date
-                        # Only update added_by when we find a more recent date
+                        added_by_names = []
                         if db_label in domain_added_by_source and domain in domain_added_by_source[db_label]:
-                            added_by = domain_added_by_source[db_label][domain]
-                elif not added_by:
-                    # Fallback: use added_by from any source if no date available
+                            name = domain_added_by_source[db_label][domain]
+                            if name and name not in added_by_names:
+                                added_by_names.append(name)
+                    elif d_date == most_recent_date:
+                        # Tie: collect additional names at same date
+                        if db_label in domain_added_by_source and domain in domain_added_by_source[db_label]:
+                            name = domain_added_by_source[db_label][domain]
+                            if name and name not in added_by_names:
+                                added_by_names.append(name)
+                elif not added_by_names:
+                    # Fallback: use name from any source if no date available
                     if db_label in domain_added_by_source and domain in domain_added_by_source[db_label]:
-                        added_by = domain_added_by_source[db_label][domain]
+                        name = domain_added_by_source[db_label][domain]
+                        if name:
+                            added_by_names.append(name)
 
+            added_by = ", ".join(added_by_names)
             date_str = most_recent_date.strftime("%d/%m/%Y") if most_recent_date else ""
             status = ""
             if added_by:
-                if added_by.strip().lower() == current_user_lower:
+                if all(n.strip().lower() == current_user_lower for n in added_by_names):
                     status = "You"
+                elif any(n.strip().lower() == current_user_lower for n in added_by_names):
+                    others = [n for n in added_by_names if n.strip().lower() != current_user_lower]
+                    status = f"You & {', '.join(others)}"
                 else:
                     status = f"Another team member ({added_by})"
 
@@ -739,9 +753,9 @@ def build_blocked_details(
 
         # Prospect Data
         if in_prospect:
-            # Find the most recent date and who added it across all prospect sources
+            # Find the most recent date and ALL names added at that date across all prospect sources
             most_recent_date = None
-            added_by = ""
+            added_by_names: list[str] = []
             source_label_display = ""
             for p_label in in_prospect:
                 if p_label in domain_dates_by_source and domain in domain_dates_by_source[p_label]:
@@ -749,19 +763,33 @@ def build_blocked_details(
                     if most_recent_date is None or d_date > most_recent_date:
                         most_recent_date = d_date
                         source_label_display = p_label
-                        # Only update added_by when we find a more recent date
+                        added_by_names = []
                         if p_label in domain_added_by_source and domain in domain_added_by_source[p_label]:
-                            added_by = domain_added_by_source[p_label][domain]
-                elif not added_by:
-                    # Fallback: use added_by from any source if no date available
+                            name = domain_added_by_source[p_label][domain]
+                            if name and name not in added_by_names:
+                                added_by_names.append(name)
+                    elif d_date == most_recent_date:
+                        # Tie: collect additional names at same date
+                        if p_label in domain_added_by_source and domain in domain_added_by_source[p_label]:
+                            name = domain_added_by_source[p_label][domain]
+                            if name and name not in added_by_names:
+                                added_by_names.append(name)
+                elif not added_by_names:
+                    # Fallback: use name from any source if no date available
                     if p_label in domain_added_by_source and domain in domain_added_by_source[p_label]:
-                        added_by = domain_added_by_source[p_label][domain]
+                        name = domain_added_by_source[p_label][domain]
+                        if name:
+                            added_by_names.append(name)
 
+            added_by = ", ".join(added_by_names)
             date_str = most_recent_date.strftime("%d/%m/%Y") if most_recent_date else ""
             status = ""
             if added_by:
-                if added_by.strip().lower() == current_user_lower:
+                if all(n.strip().lower() == current_user_lower for n in added_by_names):
                     status = "You"
+                elif any(n.strip().lower() == current_user_lower for n in added_by_names):
+                    others = [n for n in added_by_names if n.strip().lower() != current_user_lower]
+                    status = f"You & {', '.join(others)}"
                 else:
                     status = f"Another team member ({added_by})"
 
