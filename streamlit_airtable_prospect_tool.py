@@ -582,6 +582,21 @@ def apply_smart_dedup_rules(
 
         # --- Rules 2 & 4: Domain is in Database source(s) (live link confirmed) ---
         if in_database_sources:
+            # Rule 1 override: if domain is also in a recent Prospect-Data entry
+            # (added within 3 months), someone is actively outreaching - keep blocked.
+            if in_prospect_sources:
+                most_recent_prospect_date = None
+                for plabel in in_prospect_sources:
+                    if plabel in domain_dates_by_source:
+                        dates = domain_dates_by_source[plabel]
+                        if domain in dates:
+                            pd_date = make_tz_naive(dates[domain])
+                            if most_recent_prospect_date is None or pd_date > most_recent_prospect_date:
+                                most_recent_prospect_date = pd_date
+                # No date found or entry is within 3 months → active outreach → block
+                if most_recent_prospect_date is None or most_recent_prospect_date >= threshold_3m:
+                    continue
+
             # Determine if the database is same-vertical or different-vertical
             is_same_vertical_db = False
             is_diff_vertical_db = False
