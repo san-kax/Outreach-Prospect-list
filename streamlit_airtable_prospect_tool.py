@@ -1168,12 +1168,28 @@ with tab_full:
                     domain_added_by_source = {}
                     source_errors = {src["label"]: "Fetch failed" for src in active_sources}
 
-            # FIX 2: Identify mandatory sources that failed — used to gate the push button
-            mandatory_source_labels = {src["label"] for src in active_sources}
+            # FIX 2: Classify failures by source type.
+            # Prospect-Data and Disavow failures → block push (Rule 1 / disavow safety).
+            # Database/Live-Link failures → warn only (affects Rules 2 & 4, not Rule 1).
+            blocking_labels = (ALL_PROSPECT_LABELS | ALL_DISAVOW_LABELS)
             critical_errors = {
                 lbl: msg for lbl, msg in source_errors.items()
-                if lbl in mandatory_source_labels
+                if lbl in blocking_labels
             }
+            warning_errors = {
+                lbl: msg for lbl, msg in source_errors.items()
+                if lbl in ALL_DATABASE_LABELS
+            }
+
+            # Show non-blocking warning for database source failures
+            if warning_errors:
+                st.warning(
+                    f"⚠️ **{len(warning_errors)} Database/Live-Link source(s) failed to load** "
+                    f"({', '.join(f'`{l}`' for l in warning_errors)}).\n\n"
+                    "Rules 2 & 4 (age-based re-outreach) may be incomplete for affected verticals. "
+                    "Push is still allowed but treat re-outreach results with caution. "
+                    "Fix the Airtable token access and refresh for full accuracy."
+                )
 
             # ---------- Apply smart dedup rules ----------
             if domain_to_sources and domain_dates_by_source is not None:
@@ -1351,13 +1367,15 @@ with tab_full:
                     st.session_state[pushed_key] = False
                 disabled = st.session_state[pushed_key]
 
-                # FIX 2: Show error banner and block push button if any mandatory source failed
+                # FIX 2: Block push if a Prospect-Data or Disavow source failed (Rule 1 / disavow risk).
+                # Database failures are non-blocking (warned above near the results).
                 if critical_errors:
                     st.error(
-                        f"**Push blocked — {len(critical_errors)} mandatory source(s) failed to load:**\n\n"
+                        f"**Push blocked — {len(critical_errors)} Prospect-Data / Disavow source(s) "
+                        f"failed to load:**\n\n"
                         + "\n".join(f"- `{lbl}`: {msg}" for lbl, msg in critical_errors.items())
-                        + "\n\nPushing with incomplete deduplication data risks duplicate outreach. "
-                        "Fix the Airtable access errors above and refresh the page."
+                        + "\n\nWithout these sources the tool cannot enforce Rule 1 (no simultaneous "
+                        "outreach) or the disavow list. Fix the Airtable token access and refresh the page."
                     )
                     disabled = True
 
@@ -1375,13 +1393,18 @@ with tab_full:
                             date_tracking_labels=date_tracking_labels,
                         )
 
-                        # FIX 2: Abort push if any mandatory source failed during re-check
-                        if latest_errors:
-                            failed_labels = ", ".join(f"`{lbl}`" for lbl in latest_errors)
+                        # FIX 2: Abort push only if a Prospect-Data or Disavow source failed during
+                        # the final re-check. Database failures are non-blocking (warned earlier).
+                        latest_critical = {
+                            lbl: msg for lbl, msg in latest_errors.items()
+                            if lbl in (ALL_PROSPECT_LABELS | ALL_DISAVOW_LABELS)
+                        }
+                        if latest_critical:
+                            failed_labels = ", ".join(f"`{lbl}`" for lbl in latest_critical)
                             st.error(
-                                f"**Push aborted — {len(latest_errors)} mandatory source(s) failed to load "
-                                f"during final re-check:** {failed_labels}\n\n"
-                                "Pushing with incomplete data risks duplicate outreach. "
+                                f"**Push aborted — {len(latest_critical)} Prospect-Data / Disavow "
+                                f"source(s) failed during final re-check:** {failed_labels}\n\n"
+                                "Cannot guarantee Rule 1 (no simultaneous outreach) or disavow safety. "
                                 "Fix the Airtable access errors and try again."
                             )
                             st.stop()
