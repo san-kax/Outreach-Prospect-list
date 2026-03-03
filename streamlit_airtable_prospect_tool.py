@@ -151,6 +151,18 @@ ALL_DATABASE_LABELS: set[str] = {src["label"] for src in DATABASE_SOURCES}
 # ---- Build a set of ALL disavow labels ----
 ALL_DISAVOW_LABELS: set[str] = {src["label"] for src in DISAVOW_SOURCES}
 
+# ---- Build all prospect table references for real-time cross-vertical checks ----
+# These are used in the race-condition guard during push to detect concurrent pushes.
+ALL_PROSPECT_TABLES: dict[str, object] = {}
+for _vname, _vconfig in VERTICALS.items():
+    _plabel = _vconfig["prospect_label"]
+    if _plabel not in ALL_PROSPECT_TABLES:
+        ALL_PROSPECT_TABLES[_plabel] = api.base(_vconfig["prospect_base_id"]).table(_vconfig["prospect_table_id"])
+    if "extra_prospect" in _vconfig:
+        _ep = _vconfig["extra_prospect"]
+        if _ep["label"] not in ALL_PROSPECT_TABLES:
+            ALL_PROSPECT_TABLES[_ep["label"]] = api.base(_ep["base_id"]).table(_ep["table_id"])
+
 # --------------- Helpers ---------------
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
 
@@ -293,7 +305,7 @@ def fetch_single_source(
     months_threshold: int,
     return_domain_dates: bool = False,
     date_tracking_labels: set[str] | None = None,
-) -> tuple[str, set[str], int, int, str | None, dict[str, datetime] | None, dict[str, str] | None]:
+) -> tuple[str, set[str], int, int, str | None, dict[str, datetime] | None, dict[str, str] | None, str | None]:
     """Fetch domains from a single Airtable source.
 
     Returns (label, domains_set, count, safe_count, field_used, domain_dates_dict, domain_added_by_dict).
@@ -424,16 +436,19 @@ def fetch_single_source(
             src["label"], domains_set, count, safe_count, domain_field_found,
             domain_dates if return_domain_dates and should_track_dates else None,
             domain_added_by if return_domain_dates and should_track_dates else None,
+            None,  # no error
         )
 
     except Exception as e:
         error_str = str(e)
         if "403" in error_str or "Forbidden" in error_str or "INVALID_PERMISSIONS" in error_str:
             logging.error(f"Permission denied for {src['label']} (base: {src['base_id']}, table: {src['table_id']})")
+            err_msg = f"403 Forbidden — token may lack access to {src['label']} ({src['base_id']})"
         else:
             logging.error(f"Error fetching from {src['label']} ({src['base_id']}): {e}")
             logging.error(traceback.format_exc())
-        return (src["label"], set(), 0, 0, None, None, None)
+            err_msg = error_str[:200]
+        return (src["label"], set(), 0, 0, None, None, None, err_msg)
 
 
 @st.cache_data(ttl=300)
@@ -444,7 +459,7 @@ def fetch_existing_domains(
     months_threshold: int = 12,
     return_source_mapping: bool = False,
     date_tracking_labels: tuple[str, ...] = (),
-) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, set[str]] | None, dict[str, dict[str, datetime]] | None, dict[str, dict[str, str]] | None]:
+) -> tuple[set[str], dict[str, int], dict[str, int], dict[str, set[str]] | None, dict[str, dict[str, datetime]] | None, dict[str, dict[str, str]] | None, dict[str, str]]:
     """Read 'Domain' from all selected bases/tables and return a unified normalized set.
 
     Uses parallel processing to fetch from multiple sources simultaneously for better performance.
@@ -463,6 +478,7 @@ def fetch_existing_domains(
     all_domains: set[str] = set()
     source_counts: dict[str, int] = {}
     safe_domains: dict[str, int] = {}
+    source_errors: dict[str, str] = {}
     domain_to_sources: dict[str, set[str]] = {} if return_source_mapping else None
     domain_dates_by_source: dict[str, dict[str, datetime]] = {} if return_source_mapping else None
     domain_added_by_source: dict[str, dict[str, str]] = {} if return_source_mapping else None
@@ -477,7 +493,9 @@ def fetch_existing_domains(
 
         for future in as_completed(future_to_source):
             result = future.result()
-            label, domains_set, count, safe_count, field_used, domain_dates, domain_added_by = result
+            label, domains_set, count, safe_count, field_used, domain_dates, domain_added_by, err_msg = result
+            if err_msg:
+                source_errors[label] = err_msg
             all_domains.update(domains_set)
             source_counts[label] = count
             safe_domains[label] = safe_count
@@ -502,7 +520,7 @@ def fetch_existing_domains(
                 field_info = f" (using field: {field_used})" if field_used else ""
                 logging.info(f"Fetched {count:,} domains from {label} - {active:,} active, {safe_count:,} SAFE{field_info}")
 
-    return all_domains, source_counts, safe_domains, domain_to_sources, domain_dates_by_source, domain_added_by_source
+    return all_domains, source_counts, safe_domains, domain_to_sources, domain_dates_by_source, domain_added_by_source, source_errors
 
 
 def apply_smart_dedup_rules(
@@ -823,6 +841,52 @@ def domain_exists_in_prospect(domain_norm: str, push_table_ref) -> tuple[bool, s
         logging.error(f"Error checking domain existence for {domain_norm}: {e}")
         return True, None
 
+
+def batch_cross_vertical_check(domains: list[str], exclude_label: str) -> set[str]:
+    """Race-condition guard: check all domains against every prospect table except the
+    push target using a single OR formula query per table (parallel).
+
+    Returns the set of domains already found in another vertical's prospect data,
+    meaning a concurrent push happened between our re-fetch and our write.
+    """
+    if not domains:
+        return set()
+    tables_to_check = {lbl: t for lbl, t in ALL_PROSPECT_TABLES.items() if lbl != exclude_label}
+    if not tables_to_check:
+        return set()
+
+    domain_set_lower = {d.lower() for d in domains}
+    # Chunk to stay well under Airtable formula / URL length limits
+    CHUNK_SIZE = 50
+    domain_chunks = [domains[i:i + CHUNK_SIZE] for i in range(0, len(domains), CHUNK_SIZE)]
+
+    def check_table(table_ref, label: str) -> set[str]:
+        found: set[str] = set()
+        for chunk in domain_chunks:
+            clauses = [f"LOWER({{Domain}}) = '{_escape_for_formula(d)}'" for d in chunk]
+            formula = f"OR({', '.join(clauses)})" if len(clauses) > 1 else clauses[0]
+            try:
+                records = table_ref.all(formula=formula, fields=["Domain"])
+                for r in records:
+                    raw = r.get("fields", {}).get("Domain", "")
+                    norm = normalize_domain(raw)
+                    if norm and norm.lower() in domain_set_lower:
+                        found.add(norm)
+            except Exception as e:
+                logging.error(f"batch_cross_vertical_check error [{label}]: {e}")
+        return found
+
+    conflicts: set[str] = set()
+    with ThreadPoolExecutor(max_workers=min(len(tables_to_check), 7)) as executor:
+        futures = {executor.submit(check_table, t, lbl): lbl for lbl, t in tables_to_check.items()}
+        for f in as_completed(futures):
+            try:
+                conflicts.update(f.result())
+            except Exception as e:
+                logging.error(f"batch_cross_vertical_check future error: {e}")
+    return conflicts
+
+
 # ---------------- UI ----------------
 st.title("Prospect Filtering & Airtable Sync")
 
@@ -999,7 +1063,7 @@ with tab_quick:
     if check_clicked and domains_to_check:
         with st.spinner("Fetching Airtable data (uses cache — fast after first load)..."):
             try:
-                qc_existing, _, _, qc_d2s, qc_dates, qc_addedby = fetch_existing_domains(
+                qc_existing, _, _, qc_d2s, qc_dates, qc_addedby, _ = fetch_existing_domains(
                     active_sources,
                     show_progress=False,
                     exclude_old_domains=False,
@@ -1084,7 +1148,7 @@ with tab_full:
             # ---------- Fetch from all sources ----------
             with st.spinner("Fetching existing domains from Airtable..."):
                 try:
-                    existing, source_counts, safe_domains_raw, domain_to_sources, domain_dates_by_source, domain_added_by_source = fetch_existing_domains(
+                    existing, source_counts, safe_domains_raw, domain_to_sources, domain_dates_by_source, domain_added_by_source, source_errors = fetch_existing_domains(
                         active_sources,
                         show_progress=True,
                         exclude_old_domains=False,
@@ -1102,6 +1166,14 @@ with tab_full:
                     domain_to_sources = {}
                     domain_dates_by_source = {}
                     domain_added_by_source = {}
+                    source_errors = {src["label"]: "Fetch failed" for src in active_sources}
+
+            # FIX 2: Identify mandatory sources that failed — used to gate the push button
+            mandatory_source_labels = {src["label"] for src in active_sources}
+            critical_errors = {
+                lbl: msg for lbl, msg in source_errors.items()
+                if lbl in mandatory_source_labels
+            }
 
             # ---------- Apply smart dedup rules ----------
             if domain_to_sources and domain_dates_by_source is not None:
@@ -1279,19 +1351,40 @@ with tab_full:
                     st.session_state[pushed_key] = False
                 disabled = st.session_state[pushed_key]
 
+                # FIX 2: Show error banner and block push button if any mandatory source failed
+                if critical_errors:
+                    st.error(
+                        f"**Push blocked — {len(critical_errors)} mandatory source(s) failed to load:**\n\n"
+                        + "\n".join(f"- `{lbl}`: {msg}" for lbl, msg in critical_errors.items())
+                        + "\n\nPushing with incomplete deduplication data risks duplicate outreach. "
+                        "Fix the Airtable access errors above and refresh the page."
+                    )
+                    disabled = True
+
                 st.write(f"Target for push: **{push_target_label}** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
                 if st.button(f"Push {len(new_to_outreach)} Prospects to Airtable (duplicate-safe)", disabled=disabled):
                     with st.spinner("Re-checking latest records and creating new ones..."):
                         # CLEAR CACHE before re-check to get fresh data
                         fetch_existing_domains.clear()
 
-                        latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source, _ = fetch_existing_domains(
+                        latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source, _, latest_errors = fetch_existing_domains(
                             active_sources,
                             exclude_old_domains=False,
                             months_threshold=120,
                             return_source_mapping=True,
                             date_tracking_labels=date_tracking_labels,
                         )
+
+                        # FIX 2: Abort push if any mandatory source failed during re-check
+                        if latest_errors:
+                            failed_labels = ", ".join(f"`{lbl}`" for lbl in latest_errors)
+                            st.error(
+                                f"**Push aborted — {len(latest_errors)} mandatory source(s) failed to load "
+                                f"during final re-check:** {failed_labels}\n\n"
+                                "Pushing with incomplete data risks duplicate outreach. "
+                                "Fix the Airtable access errors and try again."
+                            )
+                            st.stop()
 
                         if latest_domain_to_sources and latest_domain_dates_by_source is not None:
                             latest_blocked, _, _, _ = apply_smart_dedup_rules(
@@ -1307,6 +1400,19 @@ with tab_full:
 
                         if len(to_push) < len(new_to_outreach):
                             st.warning(f"{len(new_to_outreach) - len(to_push)} domains were added by another process. Only {len(to_push)} will be pushed.")
+
+                        # FIX 1: Cross-vertical race-condition guard
+                        # Checks all other verticals' prospect tables in real time (parallel OR formula
+                        # query per table) to catch domains pushed concurrently since our re-fetch.
+                        if to_push:
+                            with st.spinner("Cross-vertical duplicate check..."):
+                                cv_conflicts = batch_cross_vertical_check(to_push, push_target_label)
+                            if cv_conflicts:
+                                to_push = [d for d in to_push if d not in cv_conflicts]
+                                st.warning(
+                                    f"**{len(cv_conflicts)} domain(s) were just added by another team member "
+                                    f"in a different vertical and have been removed from your push list.**"
+                                )
 
                         reoutreach_set = safe_prospect_3m | safe_db_diff_4m | safe_db_same_12m
 
