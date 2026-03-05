@@ -410,7 +410,12 @@ def fetch_single_source(
                         parsed_date = parse_date(str(date_field))
                         if parsed_date:
                             parsed_date = make_tz_naive(parsed_date)
-                            domain_dates[d] = parsed_date
+                            # Keep the MOST RECENT date when a domain has multiple records
+                            # (e.g. re-outreach entry + old entry). Using the newest date
+                            # ensures Rule 3 / Rule 2 age checks are not fooled by an
+                            # older duplicate record returned later by the Airtable API.
+                            if d not in domain_dates or parsed_date > domain_dates[d]:
+                                domain_dates[d] = parsed_date
 
                 # Store "Added By Name" for tracked sources
                 if return_domain_dates and should_track_dates:
