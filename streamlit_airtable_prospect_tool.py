@@ -126,7 +126,7 @@ DATABASE_SOURCES = [
     {"label": "WB-Database",         "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4", "is_disavow": False, "is_database": True, "verticals": ["WhichBingo"]},
     {"label": "Freebets-Database",   "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F", "is_disavow": False, "is_database": True, "verticals": ["Freebets"]},
     {"label": "BonusFinder-Database", "base_id": "appZEyAoVubSrBl9w", "table_id": "tbl4pzZFkzfKLhtkK", "is_disavow": False, "is_database": True, "verticals": ["BonusFinder"]},
-    {"label": "Casinos-Links",       "base_id": "appay75NrffUxBMbM", "table_id": "tblx8ZGluvQ9cWdXh", "is_disavow": False, "is_database": True, "verticals": ["Casinos"]},
+    {"label": "Casinos-Links",       "base_id": "appay75NrffUxBMbM", "table_id": "tblx8ZGIuvQ9cWdXh", "is_disavow": False, "is_database": True, "verticals": ["Casinos"]},
     {"label": "Local States Vertical Live Links", "base_id": "app08yUTcPhJVPxCI", "table_id": "tbllmyX2xNVXMEEnc", "is_disavow": False, "is_database": True, "verticals": ["States"]},
     {"label": "Sports Vertical Bookies.com and Rotowire", "base_id": "appDFsy6RWw5TRNH6", "table_id": "tbl8whN06WyCOo5uk", "is_disavow": False, "is_database": True, "verticals": ["Bookies", "Rotowire"]},
 ]
@@ -1489,6 +1489,10 @@ with tab_full:
 
                         progress_bar.empty()
                         st.session_state[pushed_key] = True
+                        # Clear cache so re-upload reflects the latest Airtable state
+                        # (covers both newly created records and cross-vertical conflicts
+                        #  that were detected after the pre-push re-fetch)
+                        fetch_existing_domains.clear()
 
                         result_parts = [f"**Created:** {created}"]
                         if updated > 0:
