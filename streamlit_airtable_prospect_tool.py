@@ -417,11 +417,19 @@ def fetch_single_source(
                             if d not in domain_dates or parsed_date > domain_dates[d]:
                                 domain_dates[d] = parsed_date
 
-                # Store "Added By Name" for tracked sources
+                # Store "Added By Name" for the most recent record only,
+                # so it matches the most recent date we kept above.
                 if return_domain_dates and should_track_dates:
-                    for abf in possible_added_by_fields:
-                        if abf in fields and fields[abf]:
-                            domain_added_by[d] = str(fields[abf]).strip()
+                    date_field_for_by = find_date_field(fields)
+                    parsed_date_for_by = parse_date(str(date_field_for_by)) if date_field_for_by else None
+                    if parsed_date_for_by:
+                        parsed_date_for_by = make_tz_naive(parsed_date_for_by)
+                    # Only update the name if this record corresponds to the date we kept
+                    if parsed_date_for_by is None or domain_dates.get(d) == parsed_date_for_by:
+                        for abf in possible_added_by_fields:
+                            if abf in fields and fields[abf]:
+                                domain_added_by[d] = str(fields[abf]).strip()
+                                break
                             break
 
                 # Disavow lists: ALWAYS exclude, no age exception
@@ -1390,20 +1398,28 @@ with tab_full:
                         # CLEAR CACHE before re-check to get fresh data
                         fetch_existing_domains.clear()
 
-                        latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source, _, latest_errors = fetch_existing_domains(
-                            active_sources,
-                            exclude_old_domains=False,
-                            months_threshold=120,
-                            return_source_mapping=True,
-                            date_tracking_labels=date_tracking_labels,
-                        )
+                        # Retry the re-check once on transient Airtable failures before aborting
+                        _recheck_attempts = 2
+                        for _attempt in range(_recheck_attempts):
+                            if _attempt > 0:
+                                time.sleep(3)
+                                fetch_existing_domains.clear()
+                            latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source, _, latest_errors = fetch_existing_domains(
+                                active_sources,
+                                exclude_old_domains=False,
+                                months_threshold=120,
+                                return_source_mapping=True,
+                                date_tracking_labels=date_tracking_labels,
+                            )
+                            latest_critical = {
+                                lbl: msg for lbl, msg in latest_errors.items()
+                                if lbl in (ALL_PROSPECT_LABELS | ALL_DISAVOW_LABELS)
+                            }
+                            if not latest_critical:
+                                break
 
                         # FIX 2: Abort push only if a Prospect-Data or Disavow source failed during
                         # the final re-check. Database failures are non-blocking (warned earlier).
-                        latest_critical = {
-                            lbl: msg for lbl, msg in latest_errors.items()
-                            if lbl in (ALL_PROSPECT_LABELS | ALL_DISAVOW_LABELS)
-                        }
                         if latest_critical:
                             failed_labels = ", ".join(f"`{lbl}`" for lbl in latest_critical)
                             st.error(
@@ -1435,6 +1451,12 @@ with tab_full:
                         if to_push:
                             with st.spinner("Cross-vertical duplicate check..."):
                                 cv_conflicts = batch_cross_vertical_check(to_push, push_target_label)
+                            # Only treat as a true race-condition conflict if the domain was NOT
+                            # already in latest_existing. Domains already known to the re-fetch
+                            # that passed apply_smart_dedup_rules (e.g. Rule 3 re-outreach candidates
+                            # in another vertical's old prospect data) are intentionally safe and
+                            # must not be re-blocked by the raw existence check here.
+                            cv_conflicts = {d for d in cv_conflicts if d not in latest_existing}
                             if cv_conflicts:
                                 to_push = [d for d in to_push if d not in cv_conflicts]
                                 st.warning(
