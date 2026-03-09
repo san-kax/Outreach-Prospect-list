@@ -1473,46 +1473,67 @@ with tab_full:
                         error_details = []
                         date_str = datetime.now().strftime("%Y-%m-%d")
 
+                        # Fetch all existing records from push table once (avoids 1 API call per domain)
                         progress_bar = st.progress(0)
-                        total = len(to_push)
+                        with st.spinner("Fetching existing records from Airtable..."):
+                            try:
+                                existing_records = push_table.all(fields=["Domain"])
+                                existing_lookup = {}  # normalized_domain -> record_id
+                                for rec in existing_records:
+                                    raw = rec.get("fields", {}).get("Domain", "")
+                                    norm = normalize_domain(raw)
+                                    if norm:
+                                        existing_lookup[norm.lower()] = rec["id"]
+                            except Exception as e:
+                                logging.error(f"Error pre-fetching push table records: {e}")
+                                existing_lookup = {}
 
-                        for idx, d in enumerate(to_push):
-                            exists, record_id = domain_exists_in_prospect(d, push_table)
-                            is_reoutreach = d in reoutreach_set
-
-                            if exists:
-                                if is_reoutreach and record_id:
-                                    try:
-                                        push_table.update(record_id, {
-                                            "Date": date_str,
-                                            "Added By Name": user_name,
-                                            "Added By Email": user_email
-                                        })
-                                        updated += 1
-                                        time.sleep(0.05)
-                                    except Exception as e:
-                                        errors += 1
-                                        error_details.append(f"{d} (update): {str(e)}")
-                                        logging.error(f"Error updating record for {d}: {e}")
+                        # Separate into creates and updates
+                        to_create = []
+                        to_update = []  # list of (domain, record_id)
+                        for d in to_push:
+                            record_id = existing_lookup.get(d.lower())
+                            if record_id:
+                                if d in reoutreach_set:
+                                    to_update.append((d, record_id))
                                 else:
                                     skipped += 1
                             else:
-                                try:
-                                    push_table.create({
-                                        "Domain": d,
-                                        "Date": date_str,
-                                        "Added By Name": user_name,
-                                        "Added By Email": user_email
-                                    })
-                                    created += 1
-                                    time.sleep(0.05)
-                                except Exception as e:
-                                    errors += 1
-                                    error_details.append(f"{d}: {str(e)}")
-                                    logging.error(f"Error creating record for {d}: {e}")
+                                to_create.append(d)
 
+                        common_fields = {"Date": date_str, "Added By Name": user_name, "Added By Email": user_email}
+                        total = len(to_create) + len(to_update)
+
+                        # Batch create (Airtable limit: 10 per request)
+                        BATCH_SIZE = 10
+                        create_batches = [to_create[i:i+BATCH_SIZE] for i in range(0, len(to_create), BATCH_SIZE)]
+                        for batch_idx, batch in enumerate(create_batches):
+                            try:
+                                records_payload = [{"Domain": d, **common_fields} for d in batch]
+                                push_table.batch_create(records_payload)
+                                created += len(batch)
+                            except Exception as e:
+                                errors += len(batch)
+                                for d in batch:
+                                    error_details.append(f"{d}: {str(e)}")
+                                logging.error(f"Error batch-creating records: {e}")
                             if total > 0:
-                                progress_bar.progress((idx + 1) / total)
+                                progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
+
+                        # Batch update re-outreach records (Airtable limit: 10 per request)
+                        update_batches = [to_update[i:i+BATCH_SIZE] for i in range(0, len(to_update), BATCH_SIZE)]
+                        for batch in update_batches:
+                            try:
+                                updates_payload = [{"id": rec_id, "fields": common_fields} for _, rec_id in batch]
+                                push_table.batch_update(updates_payload)
+                                updated += len(batch)
+                            except Exception as e:
+                                errors += len(batch)
+                                for d, _ in batch:
+                                    error_details.append(f"{d} (update): {str(e)}")
+                                logging.error(f"Error batch-updating records: {e}")
+                            if total > 0:
+                                progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
 
                         progress_bar.empty()
                         st.session_state[pushed_key] = True
@@ -1521,11 +1542,12 @@ with tab_full:
                         #  that were detected after the pre-push re-fetch)
                         fetch_existing_domains.clear()
 
-                        result_parts = [f"**Created:** {created}"]
+                        total_pushed = created + updated
+                        result_parts = [f"**Total pushed: {total_pushed}**", f"New: {created}"]
                         if updated > 0:
-                            result_parts.append(f"**Updated (re-outreach):** {updated}")
+                            result_parts.append(f"Re-outreach updated: {updated}")
                         if skipped > 0:
-                            result_parts.append(f"**Skipped (already existed):** {skipped}")
+                            result_parts.append(f"Skipped (already existed): {skipped}")
                         if errors > 0:
                             result_parts.append(f"**Errors:** {errors}")
                         st.success("  |  ".join(result_parts))
