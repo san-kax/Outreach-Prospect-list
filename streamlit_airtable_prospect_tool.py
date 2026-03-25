@@ -559,13 +559,13 @@ def apply_smart_dedup_rules(
     Returns:
         tuple: (
             final_blocked: domains that should remain blocked,
-            safe_prospect_3m: domains safe due to 3-month no-result rule (Rule 3),
+            safe_prospect_45d: domains safe due to 45-day no-result rule (Rule 3),
             safe_db_diff_vertical_4m: domains safe due to 4-month different-client rule (Rule 4),
             safe_db_same_vertical_12m: domains safe due to 12-month same-vertical rule (Rule 2),
         )
     """
     now = datetime.now()
-    threshold_3m = now - timedelta(days=3 * 30)
+    threshold_45d = now - timedelta(days=45)
     threshold_4m = now - timedelta(days=4 * 30)
     threshold_12m = now - timedelta(days=12 * 30)
 
@@ -574,7 +574,7 @@ def apply_smart_dedup_rules(
     for db_src in DATABASE_SOURCES:
         db_label_to_verticals[db_src["label"]] = db_src["verticals"]
 
-    safe_prospect_3m: set[str] = set()       # Rule 3: no-result after 3 months
+    safe_prospect_45d: set[str] = set()       # Rule 3: no-result after 45 days
     safe_db_diff_vertical_4m: set[str] = set()  # Rule 4: live link, different client, 4+ months
     safe_db_same_vertical_12m: set[str] = set()  # Rule 2: live link, same client, 12+ months
 
@@ -592,9 +592,9 @@ def apply_smart_dedup_rules(
         if in_disavow_sources:
             continue
 
-        # --- Rule 3: Domain is ONLY in Prospect-Data (no live link), older than 3 months ---
+        # --- Rule 3: Domain is ONLY in Prospect-Data (no live link), older than 45 days ---
         if in_prospect_sources and not in_database_sources:
-            # Check if ALL prospect entries for this domain are older than 3 months
+            # Check if ALL prospect entries for this domain are older than 45 days
             all_old_enough = True
             has_date = False
             for plabel in in_prospect_sources:
@@ -603,12 +603,12 @@ def apply_smart_dedup_rules(
                     if domain in dates:
                         has_date = True
                         domain_date = make_tz_naive(dates[domain])
-                        if domain_date >= threshold_3m:
+                        if domain_date >= threshold_45d:
                             all_old_enough = False
                             break
 
             if has_date and all_old_enough:
-                safe_prospect_3m.add(domain)
+                safe_prospect_45d.add(domain)
             continue  # Don't apply database rules to prospect-only domains
 
         # --- Rules 2 & 4: Domain is in Database source(s) (live link confirmed) ---
@@ -624,8 +624,8 @@ def apply_smart_dedup_rules(
                             pd_date = make_tz_naive(dates[domain])
                             if most_recent_prospect_date is None or pd_date > most_recent_prospect_date:
                                 most_recent_prospect_date = pd_date
-                # No date found or entry is within 3 months → active outreach → block
-                if most_recent_prospect_date is None or most_recent_prospect_date >= threshold_3m:
+                # No date found or entry is within 45 days → active outreach → block
+                if most_recent_prospect_date is None or most_recent_prospect_date >= threshold_45d:
                     continue
 
             # Determine if the database is same-vertical or different-vertical
@@ -670,10 +670,10 @@ def apply_smart_dedup_rules(
                     safe_db_same_vertical_12m.add(domain)
 
     # Combine all safe domains to remove from blocked set
-    all_safe = safe_prospect_3m | safe_db_diff_vertical_4m | safe_db_same_vertical_12m
+    all_safe = safe_prospect_45d | safe_db_diff_vertical_4m | safe_db_same_vertical_12m
     final_blocked = all_domains - all_safe
 
-    return final_blocked, safe_prospect_3m, safe_db_diff_vertical_4m, safe_db_same_vertical_12m
+    return final_blocked, safe_prospect_45d, safe_db_diff_vertical_4m, safe_db_same_vertical_12m
 
 
 def build_blocked_details(
@@ -1153,7 +1153,7 @@ with tab_full:
 |------|-------------|-----------|
 | **Rule 1** | No builders outreach to same site simultaneously | All Prospect-Data sources checked (mandatory) |
 | **Rule 2** | Live link sites can be reused by same vertical | **12 months** after link confirmed |
-| **Rule 3** | No-result prospects safe for all builders | **3 months** after outreach with no live link |
+| **Rule 3** | No-result prospects safe for all builders | **45 days** after outreach with no live link |
 | **Rule 4** | Live link sites can be reused by different vertical | **4 months** after link confirmed |
 | **Disavow** | Rejected/disavowed sites never reusable | Always blocked |
 """)
@@ -1206,7 +1206,7 @@ with tab_full:
 
             # ---------- Apply smart dedup rules ----------
             if domain_to_sources and domain_dates_by_source is not None:
-                blocked_domains, safe_prospect_3m, safe_db_diff_4m, safe_db_same_12m = apply_smart_dedup_rules(
+                blocked_domains, safe_prospect_45d, safe_db_diff_4m, safe_db_same_12m = apply_smart_dedup_rules(
                     existing,
                     domain_to_sources,
                     domain_dates_by_source,
@@ -1214,14 +1214,14 @@ with tab_full:
                 )
             else:
                 blocked_domains = existing
-                safe_prospect_3m = set()
+                safe_prospect_45d = set()
                 safe_db_diff_4m = set()
                 safe_db_same_12m = set()
 
             # ---------- Calculate totals ----------
             total_domains = sum(source_counts.values())
             total_blocked = len(blocked_domains)
-            total_safe_3m = len(safe_prospect_3m)
+            total_safe_45d = len(safe_prospect_45d)
             total_safe_4m = len(safe_db_diff_4m)
             total_safe_12m = len(safe_db_same_12m)
 
@@ -1234,7 +1234,7 @@ with tab_full:
             with col1:
                 st.metric("Rule 2: Same vertical 12m+", f"{total_safe_12m:,}", help="Live link sites older than 12 months, safe for same vertical")
             with col2:
-                st.metric("Rule 3: No-result 3m+", f"{total_safe_3m:,}", help="Prospect-only domains older than 3 months with no live link")
+                st.metric("Rule 3: No-result 45d+", f"{total_safe_45d:,}", help="Prospect-only domains older than 45 days with no live link")
             with col3:
                 st.metric("Rule 4: Diff vertical 4m+", f"{total_safe_4m:,}", help="Live link sites older than 4 months, safe for different vertical")
 
@@ -1303,10 +1303,10 @@ with tab_full:
             blocked_from_upload = sorted(d for d in new_domains if d in blocked_domains)
 
             # Categorize safe domains that are in the upload
-            reoutreach_3m_in_list = [d for d in new_to_outreach if d in safe_prospect_3m]
+            reoutreach_45d_in_list = [d for d in new_to_outreach if d in safe_prospect_45d]
             reoutreach_4m_in_list = [d for d in new_to_outreach if d in safe_db_diff_4m]
             reoutreach_12m_in_list = [d for d in new_to_outreach if d in safe_db_same_12m]
-            completely_new = [d for d in new_to_outreach if d not in safe_prospect_3m and d not in safe_db_diff_4m and d not in safe_db_same_12m]
+            completely_new = [d for d in new_to_outreach if d not in safe_prospect_45d and d not in safe_db_diff_4m and d not in safe_db_same_12m]
 
             # Build blocked domains detail DataFrame
             df_blocked_details = build_blocked_details(
@@ -1320,11 +1320,11 @@ with tab_full:
             # ---------- Summary ----------
             st.success(f"**{len(new_to_outreach)}** domains safe to outreach  |  **{len(blocked_from_upload)}** blocked")
 
-            if reoutreach_3m_in_list or reoutreach_4m_in_list or reoutreach_12m_in_list:
+            if reoutreach_45d_in_list or reoutreach_4m_in_list or reoutreach_12m_in_list:
                 st.markdown("**Safe-to-outreach breakdown:**")
                 st.write(f"- **{len(completely_new):,}** completely new domains")
-                if reoutreach_3m_in_list:
-                    st.write(f"- **{len(reoutreach_3m_in_list):,}** re-outreach candidates (Rule 3: no live link after 3+ months)")
+                if reoutreach_45d_in_list:
+                    st.write(f"- **{len(reoutreach_45d_in_list):,}** re-outreach candidates (Rule 3: no live link after 45+ days)")
                 if reoutreach_4m_in_list:
                     st.write(f"- **{len(reoutreach_4m_in_list):,}** available from different vertical (Rule 4: live link 4+ months ago)")
                 if reoutreach_12m_in_list:
@@ -1373,27 +1373,25 @@ with tab_full:
                     key="dl_excel",
                 )
 
-            # ---------- Push to selected vertical's Prospect-Data base (duplicate-safe) ----------
+            # ---------- Auto-push to selected vertical's Prospect-Data base (duplicate-safe) ----------
             if new_to_outreach:
-                pushed_key = f"pushed_{selected_vertical}"
-                if pushed_key not in st.session_state:
-                    st.session_state[pushed_key] = False
-                disabled = st.session_state[pushed_key]
+                # Use a key based on the domain set so a new upload auto-pushes again
+                pushed_key = f"autopushed_{selected_vertical}_{hash(frozenset(new_to_outreach))}"
+                pushed_result_key = f"{pushed_key}_result"
 
-                # FIX 2: Block push if a Prospect-Data or Disavow source failed (Rule 1 / disavow risk).
-                # Database failures are non-blocking (warned above near the results).
-                if critical_errors:
+                if st.session_state.get(pushed_key):
+                    # Already pushed this exact list — show stored result
+                    st.info(st.session_state[pushed_result_key])
+                elif critical_errors:
                     st.error(
-                        f"**Push blocked — {len(critical_errors)} Prospect-Data / Disavow source(s) "
+                        f"**Auto-push blocked — {len(critical_errors)} Prospect-Data / Disavow source(s) "
                         f"failed to load:**\n\n"
                         + "\n".join(f"- `{lbl}`: {msg}" for lbl, msg in critical_errors.items())
                         + "\n\nWithout these sources the tool cannot enforce Rule 1 (no simultaneous "
                         "outreach) or the disavow list. Fix the Airtable token access and refresh the page."
                     )
-                    disabled = True
-
-                st.write(f"Target for push: **{push_target_label}** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
-                if st.button(f"Push {len(new_to_outreach)} Prospects to Airtable (duplicate-safe)", disabled=disabled):
+                else:
+                    st.write(f"Auto-pushing to: **{push_target_label}** (`{PUSH_BASE_ID}:{PUSH_TABLE_ID}`)")
                     with st.spinner("Re-checking latest records and creating new ones..."):
                         # CLEAR CACHE before re-check to get fresh data
                         fetch_existing_domains.clear()
@@ -1464,7 +1462,7 @@ with tab_full:
                                     f"in a different vertical and have been removed from your push list.**"
                                 )
 
-                        reoutreach_set = safe_prospect_3m | safe_db_diff_4m | safe_db_same_12m
+                        reoutreach_set = safe_prospect_45d | safe_db_diff_4m | safe_db_same_12m
 
                         created = 0
                         updated = 0
@@ -1536,21 +1534,27 @@ with tab_full:
                                 progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
 
                         progress_bar.empty()
-                        st.session_state[pushed_key] = True
                         # Clear cache so re-upload reflects the latest Airtable state
                         # (covers both newly created records and cross-vertical conflicts
                         #  that were detected after the pre-push re-fetch)
                         fetch_existing_domains.clear()
 
                         total_pushed = created + updated
-                        result_parts = [f"**Total pushed: {total_pushed}**", f"New: {created}"]
+                        result_parts = [f"New: {created}"]
                         if updated > 0:
                             result_parts.append(f"Re-outreach updated: {updated}")
                         if skipped > 0:
                             result_parts.append(f"Skipped (already existed): {skipped}")
                         if errors > 0:
-                            result_parts.append(f"**Errors:** {errors}")
-                        st.success("  |  ".join(result_parts))
+                            result_parts.append(f"Errors: {errors}")
+                        result_msg = (
+                            f"✅ **{total_pushed} domains automatically pushed to Airtable** "
+                            f"({push_target_label})  |  " + "  |  ".join(result_parts)
+                        )
+                        st.success(result_msg)
+                        # Store result so it persists on re-render without re-pushing
+                        st.session_state[pushed_key] = True
+                        st.session_state[pushed_result_key] = result_msg
 
                         if errors > 0 and error_details:
                             with st.expander("View error details"):
