@@ -1072,11 +1072,20 @@ selected_vertical = st.selectbox(
 )
 vertical_config = VERTICALS[selected_vertical]
 
-# Dynamic push target based on selected vertical
+# Dynamic push target based on selected vertical.
+# If overflow bases exist for this vertical, push to the latest one instead of the primary.
 PUSH_BASE_ID = vertical_config["prospect_base_id"]
 PUSH_TABLE_ID = vertical_config["prospect_table_id"]
-push_table = api.base(PUSH_BASE_ID).table(PUSH_TABLE_ID)
 push_target_label = vertical_config["prospect_label"]
+
+_vertical_overflows = _overflow_map.get(vertical_config["prospect_label"], [])
+if _vertical_overflows:
+    _latest = _vertical_overflows[-1]  # sorted by num, so last = highest
+    PUSH_BASE_ID = _latest["base_id"]
+    PUSH_TABLE_ID = _latest["table_id"]
+    push_target_label = _latest["label"]
+
+push_table = api.base(PUSH_BASE_ID).table(PUSH_TABLE_ID)
 
 # Build the prospect source (always checked - the push target itself)
 prospect_source = {
