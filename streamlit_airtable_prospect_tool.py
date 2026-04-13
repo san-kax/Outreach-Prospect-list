@@ -72,34 +72,51 @@ def _list_all_bases() -> list[dict]:
     return bases
 
 
-def _get_workspace_id(base_id: str) -> tuple[str | None, str]:
+def _get_workspace_id(base_id: str, verticals_workspace_id: str | None = None) -> tuple[str | None, str]:
     """
     Return (workspaceId, debug_info) for a given base.
-    workspaceId is only available via GET /v0/meta/bases (list).
-    NOTE: Airtable returns workspaceId=null for personal workspaces —
-    in that case we return the raw value so the caller can still attempt base creation.
+    Tries three methods in order:
+      1. Use verticals_workspace_id if provided in VERTICALS config (most reliable)
+      2. GET /v0/meta/bases list (may omit workspaceId for personal workspaces)
+      3. GET /v0/meta/bases/{baseId} individual endpoint (fallback)
     """
+    # Method 1: hardcoded in VERTICALS config
+    if verticals_workspace_id:
+        logging.info(f"Using workspace_id from VERTICALS config: {verticals_workspace_id}")
+        return verticals_workspace_id, "from VERTICALS config"
+
+    # Method 2: list endpoint
     try:
         all_bases = _list_all_bases()
-        if not all_bases:
-            msg = "GET /meta/bases returned 0 bases — API call may have failed or token has no bases"
-            logging.error(msg)
-            return None, msg
         for base in all_bases:
             if base.get("id") == base_id:
                 wid = base.get("workspaceId")
-                all_keys = list(base.keys())
-                logging.info(f"Base {base_id} found. Keys: {all_keys}. workspaceId={repr(wid)}")
-                # Return whatever we got — even None — and let the caller decide
-                return wid, f"workspaceId={repr(wid)} (base keys: {all_keys})"
-        ids_found = [b.get("id", "?") for b in all_bases]
-        msg = f"Base {base_id} not found in {len(all_bases)} accessible bases. First 5 IDs: {ids_found[:5]}"
-        logging.error(msg)
-        return None, msg
+                if wid:
+                    logging.info(f"Found workspaceId={wid} from list endpoint")
+                    return wid, "from list endpoint"
+                break  # found base but no workspaceId — try method 3
     except Exception as e:
-        msg = f"Exception in _get_workspace_id: {e}"
-        logging.error(msg)
-        return None, msg
+        logging.error(f"List endpoint failed: {e}")
+
+    # Method 3: individual base endpoint
+    try:
+        resp = requests.get(f"{_AIRTABLE_META}/bases/{base_id}", headers=_AIRTABLE_HEADERS, timeout=15)
+        if resp.ok:
+            data = resp.json()
+            wid = data.get("workspaceId")
+            if wid:
+                logging.info(f"Found workspaceId={wid} from individual base endpoint")
+                return wid, "from individual base endpoint"
+            logging.info(f"Individual base endpoint keys: {list(data.keys())}")
+    except Exception as e:
+        logging.error(f"Individual base endpoint failed: {e}")
+
+    msg = (
+        "workspaceId not found via API (personal workspaces don't expose it). "
+        "Add 'workspace_id' to this vertical in VERTICALS config. "
+        "Find it in Airtable: click your workspace name → Settings → the ID starts with 'wsp'."
+    )
+    return None, msg
 
 
 def _get_table_defs_for_create(base_id: str, table_id: str) -> list:
@@ -132,7 +149,7 @@ def _get_table_defs_for_create(base_id: str, table_id: str) -> list:
         return fallback
 
 
-def create_overflow_base(current_label: str, current_base_id: str, current_table_id: str):
+def create_overflow_base(current_label: str, current_base_id: str, current_table_id: str, config_workspace_id: str | None = None):
     """
     Create the next numbered overflow base (e.g. Prospect-Data-GDC-1 → GDC-2).
     Returns (new_base_id, new_table_id, new_label, None) on success,
@@ -145,8 +162,7 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
     else:
         new_label = f"{current_label}-2"
 
-    workspace_id, ws_debug = _get_workspace_id(current_base_id)
-    # workspace_id may be None for personal workspaces — try both with and without it
+    workspace_id, ws_debug = _get_workspace_id(current_base_id, verticals_workspace_id=config_workspace_id)
     logging.info(f"create_overflow_base: workspace lookup result: {ws_debug}")
 
     table_defs = _get_table_defs_for_create(current_base_id, current_table_id)
@@ -212,47 +228,57 @@ def test_base_access(base_id: str, table_id: str) -> tuple[bool, str]:
         return False, f"Error: {error_str[:150]}"
 
 # ---- Verticals: each has its own Prospect-Data push target ----
+# workspace_id: required for auto-creating overflow bases when a table hits its record limit.
+# Find it in Airtable → click your workspace name → Settings → copy the ID (starts with 'wsp').
 VERTICALS = {
     "GDC": {
         "prospect_base_id": "appVyIiM5boVyoBhf",
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-GDC-1",
+        "workspace_id": "wsp0AMYMJnoJ3KDLB",
         "extra_prospect": {"label": "Prospect-Data-GDC", "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP"},
     },
     "WhichBingo": {
         "prospect_base_id": "appphIl2Iq8kloRGD",
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-WhichBingo",
+        "workspace_id": "wsp0AMYMJnoJ3KDLB",
     },
     "BonusFinder": {
         "prospect_base_id": "app7LTnZSYutwKzsx",
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-BonusFinder",
+        "workspace_id": "wsp0AMYMJnoJ3KDLB",
     },
     "Freebets": {
         "prospect_base_id": "appzbw2BJVm5QXCAa",
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-Freebets",
+        "workspace_id": "wsp0AMYMJnoJ3KDLB",
     },
     "Bookies": {
         "prospect_base_id": "appZfavfEMOpPbqiP",
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-Bookies",
+        "workspace_id": "wsp0AMYMJnoJ3KDLB",
     },
     "Casinos": {
         "prospect_base_id": "appO5ta4j5rUaG9XL",
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-Casinos",
+        "workspace_id": "wsp0AMYMJnoJ3KDLB",
     },
     "Rotowire": {
         "prospect_base_id": "appwEdvjcFpq4qiHj",
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-Rotowire",
+        "workspace_id": "wsp0AMYMJnoJ3KDLB",
     },
     "States": {
         "prospect_base_id": "appzVpYiLO90EgRgj",
         "prospect_table_id": "tbliCOQZY9RICLsLP",
         "prospect_label": "Prospect-Data-States-Sites",
+        "workspace_id": "wsp0AMYMJnoJ3KDLB",
     },
 }
 
@@ -1424,7 +1450,7 @@ with tab_quick:
                         except Exception as e:
                             if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
                                 # Primary full — create overflow NOW and retry this same batch
-                                ob_id, ot_id, ol, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
+                                ob_id, ot_id, ol, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID, config_workspace_id=vertical_config.get("workspace_id"))
                                 if ob_id:
                                     ov_ref = api.base(ob_id).table(ot_id)
                                     qc_overflow_info = (ob_id, ot_id, ol, ov_ref)
@@ -1917,7 +1943,7 @@ with tab_full:
                                 if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
                                     # Primary full — create overflow NOW and retry this same batch
                                     with st.spinner("Primary table full — creating overflow base…"):
-                                        ov_base_id, ov_table_id, ov_label, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
+                                        ov_base_id, ov_table_id, ov_label, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID, config_workspace_id=vertical_config.get("workspace_id"))
                                     if ov_base_id:
                                         ov_table_ref = api.base(ov_base_id).table(ov_table_id)
                                         overflow_info = (ov_base_id, ov_table_id, ov_label, ov_table_ref)
