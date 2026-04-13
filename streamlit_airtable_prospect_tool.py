@@ -76,7 +76,8 @@ def _get_workspace_id(base_id: str) -> tuple[str | None, str]:
     """
     Return (workspaceId, debug_info) for a given base.
     workspaceId is only available via GET /v0/meta/bases (list).
-    debug_info explains what happened — shown in the UI on failure.
+    NOTE: Airtable returns workspaceId=null for personal workspaces —
+    in that case we return the raw value so the caller can still attempt base creation.
     """
     try:
         all_bases = _list_all_bases()
@@ -84,16 +85,14 @@ def _get_workspace_id(base_id: str) -> tuple[str | None, str]:
             msg = "GET /meta/bases returned 0 bases — API call may have failed or token has no bases"
             logging.error(msg)
             return None, msg
-        ids_found = [b.get("id", "?") for b in all_bases]
         for base in all_bases:
             if base.get("id") == base_id:
                 wid = base.get("workspaceId")
-                if wid:
-                    logging.info(f"Found workspaceId={wid} for base {base_id}")
-                    return wid, ""
-                msg = f"Base found but workspaceId field is missing or null"
-                logging.error(msg)
-                return None, msg
+                all_keys = list(base.keys())
+                logging.info(f"Base {base_id} found. Keys: {all_keys}. workspaceId={repr(wid)}")
+                # Return whatever we got — even None — and let the caller decide
+                return wid, f"workspaceId={repr(wid)} (base keys: {all_keys})"
+        ids_found = [b.get("id", "?") for b in all_bases]
         msg = f"Base {base_id} not found in {len(all_bases)} accessible bases. First 5 IDs: {ids_found[:5]}"
         logging.error(msg)
         return None, msg
@@ -147,16 +146,18 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
         new_label = f"{current_label}-2"
 
     workspace_id, ws_debug = _get_workspace_id(current_base_id)
-    if not workspace_id:
-        err = f"Could not find workspaceId for base {current_base_id}: {ws_debug}"
-        logging.error(f"create_overflow_base: {err}")
-        return None, None, None, err
+    # workspace_id may be None for personal workspaces — try both with and without it
+    logging.info(f"create_overflow_base: workspace lookup result: {ws_debug}")
 
     table_defs = _get_table_defs_for_create(current_base_id, current_table_id)
 
+    # Build payload — include workspaceId only if we have one
+    payload: dict = {"name": new_label, "tables": table_defs}
+    if workspace_id:
+        payload["workspaceId"] = workspace_id
+
     try:
-        # POST /v0/meta/bases — workspaceId goes in the request body (not the URL)
-        payload = {"name": new_label, "workspaceId": workspace_id, "tables": table_defs}
+        # POST /v0/meta/bases — workspaceId in body (may be omitted for personal workspaces)
         resp = requests.post(f"{_AIRTABLE_META}/bases", headers=_AIRTABLE_HEADERS, json=payload, timeout=30)
         resp.raise_for_status()
         data = resp.json()
@@ -165,12 +166,13 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
         logging.info(f"Created overflow base '{new_label}' id={new_base_id} table={new_table_id}")
         return new_base_id, new_table_id, new_label, None
     except requests.HTTPError as e:
-        err = f"HTTP {e.response.status_code} — {e.response.text}"
+        err = f"HTTP {e.response.status_code} — {e.response.text} (ws_debug: {ws_debug})"
         logging.error(f"Failed to create overflow base '{new_label}': {err}")
         return None, None, None, err
     except Exception as e:
-        logging.error(f"Failed to create overflow base '{new_label}': {e}")
-        return None, None, None, str(e)
+        err = f"{e} (ws_debug: {ws_debug})"
+        logging.error(f"Failed to create overflow base '{new_label}': {err}")
+        return None, None, None, err
 
 
 # Helper function to test base access with detailed diagnostics
