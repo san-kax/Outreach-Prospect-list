@@ -109,14 +109,17 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
     table_defs = _get_table_defs_for_create(current_base_id, current_table_id)
 
     try:
-        payload = {"name": new_label, "workspaceId": workspace_id, "tables": table_defs}
-        resp = requests.post(f"{_AIRTABLE_META}/bases", headers=_AIRTABLE_HEADERS, json=payload, timeout=30)
+        payload = {"name": new_label, "tables": table_defs}
+        resp = requests.post(f"{_AIRTABLE_META}/workspaces/{workspace_id}/bases", headers=_AIRTABLE_HEADERS, json=payload, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         new_base_id = data["id"]
         new_table_id = data["tables"][0]["id"]
         logging.info(f"Created overflow base '{new_label}' id={new_base_id} table={new_table_id}")
         return new_base_id, new_table_id, new_label
+    except requests.HTTPError as e:
+        logging.error(f"Failed to create overflow base '{new_label}': HTTP {e.response.status_code} — {e.response.text}")
+        return None
     except Exception as e:
         logging.error(f"Failed to create overflow base '{new_label}': {e}")
         return None
