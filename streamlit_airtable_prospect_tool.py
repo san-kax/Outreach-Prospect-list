@@ -1696,11 +1696,15 @@ with tab_full:
                         # CLEAR CACHE before re-check to get fresh data
                         fetch_existing_domains.clear()
 
-                        # Retry the re-check once on transient Airtable failures before aborting
-                        _recheck_attempts = 2
+                        # Retry the re-check on transient Airtable failures (504/timeout) before aborting.
+                        # Use up to 4 attempts with exponential backoff (3s, 6s, 12s).
+                        _recheck_attempts = 4
+                        _recheck_delays = [0, 3, 6, 12]
                         for _attempt in range(_recheck_attempts):
                             if _attempt > 0:
-                                time.sleep(3)
+                                _wait = _recheck_delays[_attempt]
+                                st.caption(f"Transient Airtable error — retrying in {_wait}s (attempt {_attempt + 1}/{_recheck_attempts})…")
+                                time.sleep(_wait)
                                 fetch_existing_domains.clear()
                             latest_existing, _, _, latest_domain_to_sources, latest_domain_dates_by_source, _, latest_errors = fetch_existing_domains(
                                 active_sources,
@@ -1713,18 +1717,32 @@ with tab_full:
                                 lbl: msg for lbl, msg in latest_errors.items()
                                 if lbl in (ALL_PROSPECT_LABELS | ALL_DISAVOW_LABELS)
                             }
-                            if not latest_critical:
+                            # Only retry on transient server errors (5xx / timeout), not permanent ones (4xx)
+                            _is_transient = any(
+                                any(code in msg for code in ("504", "503", "502", "500", "timed out", "timeout", "Connection"))
+                                for msg in latest_critical.values()
+                            )
+                            if not latest_critical or not _is_transient:
                                 break
 
                         # FIX 2: Abort push only if a Prospect-Data or Disavow source failed during
                         # the final re-check. Database failures are non-blocking (warned earlier).
                         if latest_critical:
                             failed_labels = ", ".join(f"`{lbl}`" for lbl in latest_critical)
+                            _any_transient = any(
+                                any(code in msg for code in ("504", "503", "502", "500", "timed out", "timeout", "Connection"))
+                                for msg in latest_critical.values()
+                            )
+                            _hint = (
+                                "This appears to be a temporary Airtable server issue (5xx/timeout). "
+                                "Please wait a minute and refresh the page to try again."
+                                if _any_transient else
+                                "Fix the Airtable token access and refresh the page."
+                            )
                             st.error(
                                 f"**Push aborted — {len(latest_critical)} Prospect-Data / Disavow "
                                 f"source(s) failed during final re-check:** {failed_labels}\n\n"
-                                "Cannot guarantee Rule 1 (no simultaneous outreach) or disavow safety. "
-                                "Fix the Airtable access errors and try again."
+                                f"Cannot guarantee Rule 1 (no simultaneous outreach) or disavow safety. {_hint}"
                             )
                             st.stop()
 
