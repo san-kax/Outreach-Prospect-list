@@ -4,6 +4,7 @@ import re
 import time
 import logging
 import traceback
+import requests
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from typing import Iterable
@@ -40,11 +41,19 @@ api = Api(AIRTABLE_TOKEN)
 
 # ---- Overflow base helpers ----
 
+_AIRTABLE_HEADERS = {
+    "Authorization": f"Bearer {AIRTABLE_TOKEN}",
+    "Content-Type": "application/json",
+}
+_AIRTABLE_META = "https://api.airtable.com/v0/meta"
+
+
 def _get_workspace_id(base_id: str) -> str | None:
-    """Return the workspace ID that owns the given base (via Airtable Meta API)."""
+    """Return the workspace ID that owns the given base via direct Airtable Meta API call."""
     try:
-        resp = api.get(f"meta/bases/{base_id}")
-        return resp.get("workspaceId")
+        resp = requests.get(f"{_AIRTABLE_META}/bases/{base_id}", headers=_AIRTABLE_HEADERS, timeout=15)
+        resp.raise_for_status()
+        return resp.json().get("workspaceId")
     except Exception as e:
         logging.error(f"Could not get workspace ID for base {base_id}: {e}")
         return None
@@ -52,7 +61,7 @@ def _get_workspace_id(base_id: str) -> str | None:
 
 def _get_table_defs_for_create(base_id: str, table_id: str) -> list:
     """
-    Return a table-definition list suitable for api.create_base().
+    Return a table-definition list for the Airtable create-base API.
     Falls back to a minimal four-field schema if introspection fails.
     """
     fallback = [{"name": "Prospects", "fields": [
@@ -62,19 +71,18 @@ def _get_table_defs_for_create(base_id: str, table_id: str) -> list:
         {"name": "Added By Email", "type": "singleLineText"},
     ]}]
     try:
-        schema = api.base(base_id).schema()
-        for t in schema.tables:
-            if t.id == table_id:
-                fields = []
-                for f in t.fields:
-                    # Skip Airtable auto-fields that can't be specified on create
-                    if f.type in ("autoNumber", "createdTime", "lastModifiedTime", "formula", "rollup", "lookup"):
-                        continue
-                    fdef: dict = {"name": f.name, "type": f.type}
-                    if hasattr(f, "options") and f.options:
-                        fdef["options"] = f.options
-                    fields.append(fdef)
-                return [{"name": t.name, "fields": fields}] if fields else fallback
+        resp = requests.get(f"{_AIRTABLE_META}/bases/{base_id}/tables", headers=_AIRTABLE_HEADERS, timeout=15)
+        resp.raise_for_status()
+        tables = resp.json().get("tables", [])
+        skip_types = {"autoNumber", "createdTime", "lastModifiedTime", "formula", "rollup", "lookup", "count"}
+        for t in tables:
+            if t["id"] == table_id:
+                fields = [
+                    {"name": f["name"], "type": f["type"]}
+                    for f in t.get("fields", [])
+                    if f["type"] not in skip_types
+                ]
+                return [{"name": t["name"], "fields": fields}] if fields else fallback
         return fallback
     except Exception as e:
         logging.error(f"Could not introspect table schema for overflow: {e}")
@@ -95,15 +103,18 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
 
     workspace_id = _get_workspace_id(current_base_id)
     if not workspace_id:
+        logging.error("create_overflow_base: could not determine workspace ID")
         return None
 
     table_defs = _get_table_defs_for_create(current_base_id, current_table_id)
 
     try:
-        new_base = api.create_base(workspace_id, new_label, table_defs)
-        new_base_id = new_base.id
-        new_schema = api.base(new_base_id).schema()
-        new_table_id = new_schema.tables[0].id
+        payload = {"name": new_label, "workspaceId": workspace_id, "tables": table_defs}
+        resp = requests.post(f"{_AIRTABLE_META}/bases", headers=_AIRTABLE_HEADERS, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        new_base_id = data["id"]
+        new_table_id = data["tables"][0]["id"]
         logging.info(f"Created overflow base '{new_label}' id={new_base_id} table={new_table_id}")
         return new_base_id, new_table_id, new_label
     except Exception as e:
@@ -212,10 +223,12 @@ def discover_overflow_bases() -> dict[str, list[dict]]:
 
     result: dict[str, list[dict]] = {}
     try:
-        all_bases = api.bases()
+        resp = requests.get(f"{_AIRTABLE_META}/bases", headers=_AIRTABLE_HEADERS, timeout=20)
+        resp.raise_for_status()
+        all_bases = resp.json().get("bases", [])
         suffix_pattern = re.compile(r"^(.+)-(\d+)$")
         for b in all_bases:
-            m = suffix_pattern.match(b.name)
+            m = suffix_pattern.match(b.get("name", ""))
             if not m:
                 continue
             root, num = m.group(1), int(m.group(2))
@@ -223,12 +236,14 @@ def discover_overflow_bases() -> dict[str, list[dict]]:
                 continue
             primary_label = primary_root_map[root]
             try:
-                schema = api.base(b.id).schema()
-                if not schema.tables:
+                t_resp = requests.get(f"{_AIRTABLE_META}/bases/{b['id']}/tables", headers=_AIRTABLE_HEADERS, timeout=15)
+                t_resp.raise_for_status()
+                tables = t_resp.json().get("tables", [])
+                if not tables:
                     continue
-                table_id = schema.tables[0].id
+                table_id = tables[0]["id"]
                 result.setdefault(primary_label, []).append(
-                    {"label": b.name, "base_id": b.id, "table_id": table_id, "num": num}
+                    {"label": b["name"], "base_id": b["id"], "table_id": table_id, "num": num}
                 )
             except Exception:
                 pass
