@@ -72,22 +72,35 @@ def _list_all_bases() -> list[dict]:
     return bases
 
 
-def _get_workspace_id(base_id: str) -> str | None:
+def _get_workspace_id(base_id: str) -> tuple[str | None, str]:
     """
-    Return the workspace ID for a given base.
-    workspaceId is only available via GET /v0/meta/bases (list), not the single-base endpoint.
+    Return (workspaceId, debug_info) for a given base.
+    workspaceId is only available via GET /v0/meta/bases (list).
+    debug_info explains what happened — shown in the UI on failure.
     """
     try:
-        for base in _list_all_bases():
+        all_bases = _list_all_bases()
+        if not all_bases:
+            msg = "GET /meta/bases returned 0 bases — API call may have failed or token has no bases"
+            logging.error(msg)
+            return None, msg
+        ids_found = [b.get("id", "?") for b in all_bases]
+        for base in all_bases:
             if base.get("id") == base_id:
                 wid = base.get("workspaceId")
-                logging.info(f"Found workspaceId={wid} for base {base_id}")
-                return wid
-        logging.error(f"Base {base_id} not found in accessible bases list")
-        return None
+                if wid:
+                    logging.info(f"Found workspaceId={wid} for base {base_id}")
+                    return wid, ""
+                msg = f"Base found but workspaceId field is missing or null"
+                logging.error(msg)
+                return None, msg
+        msg = f"Base {base_id} not found in {len(all_bases)} accessible bases. First 5 IDs: {ids_found[:5]}"
+        logging.error(msg)
+        return None, msg
     except Exception as e:
-        logging.error(f"Could not get workspace ID for base {base_id}: {e}")
-        return None
+        msg = f"Exception in _get_workspace_id: {e}"
+        logging.error(msg)
+        return None, msg
 
 
 def _get_table_defs_for_create(base_id: str, table_id: str) -> list:
@@ -133,9 +146,9 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
     else:
         new_label = f"{current_label}-2"
 
-    workspace_id = _get_workspace_id(current_base_id)
+    workspace_id, ws_debug = _get_workspace_id(current_base_id)
     if not workspace_id:
-        err = f"Could not find workspaceId for base {current_base_id} — check schema.bases:read scope"
+        err = f"Could not find workspaceId for base {current_base_id}: {ws_debug}"
         logging.error(f"create_overflow_base: {err}")
         return None, None, None, err
 
