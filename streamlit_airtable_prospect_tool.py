@@ -48,12 +48,43 @@ _AIRTABLE_HEADERS = {
 _AIRTABLE_META = "https://api.airtable.com/v0/meta"
 
 
+def _list_all_bases() -> list[dict]:
+    """
+    Return all bases accessible to the token, handling pagination.
+    GET /v0/meta/bases returns up to 1000 bases per page with an offset cursor.
+    Each base object contains: id, name, workspaceId, permissionLevel.
+    """
+    bases = []
+    params = {}
+    while True:
+        try:
+            resp = requests.get(f"{_AIRTABLE_META}/bases", headers=_AIRTABLE_HEADERS, params=params, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            bases.extend(data.get("bases", []))
+            offset = data.get("offset")
+            if not offset:
+                break
+            params = {"offset": offset}
+        except Exception as e:
+            logging.error(f"Error listing bases (offset={params}): {e}")
+            break
+    return bases
+
+
 def _get_workspace_id(base_id: str) -> str | None:
-    """Return the workspace ID that owns the given base via direct Airtable Meta API call."""
+    """
+    Return the workspace ID for a given base.
+    workspaceId is only available via GET /v0/meta/bases (list), not the single-base endpoint.
+    """
     try:
-        resp = requests.get(f"{_AIRTABLE_META}/bases/{base_id}", headers=_AIRTABLE_HEADERS, timeout=15)
-        resp.raise_for_status()
-        return resp.json().get("workspaceId")
+        for base in _list_all_bases():
+            if base.get("id") == base_id:
+                wid = base.get("workspaceId")
+                logging.info(f"Found workspaceId={wid} for base {base_id}")
+                return wid
+        logging.error(f"Base {base_id} not found in accessible bases list")
+        return None
     except Exception as e:
         logging.error(f"Could not get workspace ID for base {base_id}: {e}")
         return None
@@ -109,8 +140,9 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
     table_defs = _get_table_defs_for_create(current_base_id, current_table_id)
 
     try:
-        payload = {"name": new_label, "tables": table_defs}
-        resp = requests.post(f"{_AIRTABLE_META}/workspaces/{workspace_id}/bases", headers=_AIRTABLE_HEADERS, json=payload, timeout=30)
+        # POST /v0/meta/bases — workspaceId goes in the request body (not the URL)
+        payload = {"name": new_label, "workspaceId": workspace_id, "tables": table_defs}
+        resp = requests.post(f"{_AIRTABLE_META}/bases", headers=_AIRTABLE_HEADERS, json=payload, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         new_base_id = data["id"]
@@ -226,9 +258,7 @@ def discover_overflow_bases() -> dict[str, list[dict]]:
 
     result: dict[str, list[dict]] = {}
     try:
-        resp = requests.get(f"{_AIRTABLE_META}/bases", headers=_AIRTABLE_HEADERS, timeout=20)
-        resp.raise_for_status()
-        all_bases = resp.json().get("bases", [])
+        all_bases = _list_all_bases()
         suffix_pattern = re.compile(r"^(.+)-(\d+)$")
         for b in all_bases:
             m = suffix_pattern.match(b.get("name", ""))
