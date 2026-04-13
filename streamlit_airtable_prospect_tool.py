@@ -123,7 +123,8 @@ def _get_table_defs_for_create(base_id: str, table_id: str) -> list:
 def create_overflow_base(current_label: str, current_base_id: str, current_table_id: str):
     """
     Create the next numbered overflow base (e.g. Prospect-Data-GDC-1 → GDC-2).
-    Returns (new_base_id, new_table_id, new_label) or None on failure.
+    Returns (new_base_id, new_table_id, new_label, None) on success,
+    or (None, None, None, error_str) on failure — so callers can show the real error.
     """
     match = re.search(r"(-\d+)$", current_label)
     if match:
@@ -134,8 +135,9 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
 
     workspace_id = _get_workspace_id(current_base_id)
     if not workspace_id:
-        logging.error("create_overflow_base: could not determine workspace ID")
-        return None
+        err = f"Could not find workspaceId for base {current_base_id} — check schema.bases:read scope"
+        logging.error(f"create_overflow_base: {err}")
+        return None, None, None, err
 
     table_defs = _get_table_defs_for_create(current_base_id, current_table_id)
 
@@ -148,13 +150,14 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
         new_base_id = data["id"]
         new_table_id = data["tables"][0]["id"]
         logging.info(f"Created overflow base '{new_label}' id={new_base_id} table={new_table_id}")
-        return new_base_id, new_table_id, new_label
+        return new_base_id, new_table_id, new_label, None
     except requests.HTTPError as e:
-        logging.error(f"Failed to create overflow base '{new_label}': HTTP {e.response.status_code} — {e.response.text}")
-        return None
+        err = f"HTTP {e.response.status_code} — {e.response.text}"
+        logging.error(f"Failed to create overflow base '{new_label}': {err}")
+        return None, None, None, err
     except Exception as e:
         logging.error(f"Failed to create overflow base '{new_label}': {e}")
-        return None
+        return None, None, None, str(e)
 
 
 # Helper function to test base access with detailed diagnostics
@@ -1406,9 +1409,8 @@ with tab_quick:
                         except Exception as e:
                             if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
                                 # Primary full — create overflow NOW and retry this same batch
-                                ov_result = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
-                                if ov_result:
-                                    ob_id, ot_id, ol = ov_result
+                                ob_id, ot_id, ol, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
+                                if ob_id:
                                     ov_ref = api.base(ob_id).table(ot_id)
                                     qc_overflow_info = (ob_id, ot_id, ol, ov_ref)
                                     discover_overflow_bases.clear()
@@ -1423,7 +1425,7 @@ with tab_quick:
                                 else:
                                     qc_errors += len(batch)
                                     for d in batch:
-                                        qc_error_details.append(f"{d}: overflow base creation failed")
+                                        qc_error_details.append(f"{d}: overflow base creation failed — {ov_err}")
                             else:
                                 qc_errors += len(batch)
                                 for d in batch:
@@ -1900,9 +1902,8 @@ with tab_full:
                                 if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
                                     # Primary full — create overflow NOW and retry this same batch
                                     with st.spinner("Primary table full — creating overflow base…"):
-                                        ov_result = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
-                                    if ov_result:
-                                        ov_base_id, ov_table_id, ov_label = ov_result
+                                        ov_base_id, ov_table_id, ov_label, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
+                                    if ov_base_id:
                                         ov_table_ref = api.base(ov_base_id).table(ov_table_id)
                                         overflow_info = (ov_base_id, ov_table_id, ov_label, ov_table_ref)
                                         discover_overflow_bases.clear()
@@ -1917,7 +1918,7 @@ with tab_full:
                                     else:
                                         errors += len(batch)
                                         for d in batch:
-                                            error_details.append(f"{d}: table limit hit and overflow base creation failed")
+                                            error_details.append(f"{d}: overflow base creation failed — {ov_err}")
                                 else:
                                     errors += len(batch)
                                     for d in batch:
