@@ -37,6 +37,80 @@ if not AIRTABLE_TOKEN:
 
 api = Api(AIRTABLE_TOKEN)
 
+
+# ---- Overflow base helpers ----
+
+def _get_workspace_id(base_id: str) -> str | None:
+    """Return the workspace ID that owns the given base (via Airtable Meta API)."""
+    try:
+        resp = api.get(f"meta/bases/{base_id}")
+        return resp.get("workspaceId")
+    except Exception as e:
+        logging.error(f"Could not get workspace ID for base {base_id}: {e}")
+        return None
+
+
+def _get_table_defs_for_create(base_id: str, table_id: str) -> list:
+    """
+    Return a table-definition list suitable for api.create_base().
+    Falls back to a minimal four-field schema if introspection fails.
+    """
+    fallback = [{"name": "Prospects", "fields": [
+        {"name": "Domain",         "type": "singleLineText"},
+        {"name": "Date",           "type": "singleLineText"},
+        {"name": "Added By Name",  "type": "singleLineText"},
+        {"name": "Added By Email", "type": "singleLineText"},
+    ]}]
+    try:
+        schema = api.base(base_id).schema()
+        for t in schema.tables:
+            if t.id == table_id:
+                fields = []
+                for f in t.fields:
+                    # Skip Airtable auto-fields that can't be specified on create
+                    if f.type in ("autoNumber", "createdTime", "lastModifiedTime", "formula", "rollup", "lookup"):
+                        continue
+                    fdef: dict = {"name": f.name, "type": f.type}
+                    if hasattr(f, "options") and f.options:
+                        fdef["options"] = f.options
+                    fields.append(fdef)
+                return [{"name": t.name, "fields": fields}] if fields else fallback
+        return fallback
+    except Exception as e:
+        logging.error(f"Could not introspect table schema for overflow: {e}")
+        return fallback
+
+
+def create_overflow_base(current_label: str, current_base_id: str, current_table_id: str):
+    """
+    Create the next numbered overflow base (e.g. Prospect-Data-GDC-1 → GDC-2).
+    Returns (new_base_id, new_table_id, new_label) or None on failure.
+    """
+    match = re.search(r"(-\d+)$", current_label)
+    if match:
+        next_num = int(match.group(1)[1:]) + 1
+        new_label = current_label[: match.start()] + f"-{next_num}"
+    else:
+        new_label = f"{current_label}-2"
+
+    workspace_id = _get_workspace_id(current_base_id)
+    if not workspace_id:
+        return None
+
+    table_defs = _get_table_defs_for_create(current_base_id, current_table_id)
+
+    try:
+        new_base = api.create_base(workspace_id, new_label, table_defs)
+        new_base_id = new_base.id
+        new_schema = api.base(new_base_id).schema()
+        new_table_id = new_schema.tables[0].id
+        logging.info(f"Created overflow base '{new_label}' id={new_base_id} table={new_table_id}")
+        return new_base_id, new_table_id, new_label
+    except Exception as e:
+        logging.error(f"Failed to create overflow base '{new_label}': {e}")
+        return None
+
+
 # Helper function to test base access with detailed diagnostics
 def test_base_access(base_id: str, table_id: str) -> tuple[bool, str]:
     """Test if we can access a specific base/table. Returns (success, message)."""
@@ -118,6 +192,53 @@ VERTICALS = {
     },
 }
 
+@st.cache_data(ttl=600, show_spinner=False)
+def discover_overflow_bases() -> dict[str, list[dict]]:
+    """
+    Scan all accessible Airtable bases for overflow bases created by this app.
+    Overflow bases are named '{primary_label}-2', '-3', etc.
+    Returns {primary_label: [{"label", "base_id", "table_id", "num"}, ...]} sorted by num.
+    """
+    # Build root → primary_label map, stripping any trailing number from the primary label
+    # e.g. "Prospect-Data-GDC-1" → root "Prospect-Data-GDC" → primary "Prospect-Data-GDC-1"
+    #      "Prospect-Data-Rotowire" → root "Prospect-Data-Rotowire" → primary "Prospect-Data-Rotowire"
+    suffix_re = re.compile(r"(-\d+)$")
+    primary_root_map: dict[str, str] = {}
+    for vconfig in VERTICALS.values():
+        label = vconfig["prospect_label"]
+        m_label = suffix_re.search(label)
+        root = label[: m_label.start()] if m_label else label
+        primary_root_map[root] = label
+
+    result: dict[str, list[dict]] = {}
+    try:
+        all_bases = api.bases()
+        suffix_pattern = re.compile(r"^(.+)-(\d+)$")
+        for b in all_bases:
+            m = suffix_pattern.match(b.name)
+            if not m:
+                continue
+            root, num = m.group(1), int(m.group(2))
+            if num < 2 or root not in primary_root_map:
+                continue
+            primary_label = primary_root_map[root]
+            try:
+                schema = api.base(b.id).schema()
+                if not schema.tables:
+                    continue
+                table_id = schema.tables[0].id
+                result.setdefault(primary_label, []).append(
+                    {"label": b.name, "base_id": b.id, "table_id": table_id, "num": num}
+                )
+            except Exception:
+                pass
+        for k in result:
+            result[k].sort(key=lambda x: x["num"])
+    except Exception as e:
+        logging.error(f"Error discovering overflow bases: {e}")
+    return result
+
+
 # ---- Database / Live Link sources (domain here = live link confirmed) ----
 # Each mapped to the vertical(s) it belongs to for per-vertical threshold logic.
 # "verticals" list indicates which vertical(s) this database represents.
@@ -163,6 +284,14 @@ for _vname, _vconfig in VERTICALS.items():
         if _ep["label"] not in ALL_PROSPECT_TABLES:
             ALL_PROSPECT_TABLES[_ep["label"]] = api.base(_ep["base_id"]).table(_ep["table_id"])
 
+# ---- Register any auto-created overflow bases into the global sets ----
+_overflow_map: dict[str, list[dict]] = discover_overflow_bases()
+for _primary_label, _overflows in _overflow_map.items():
+    for _ov in _overflows:
+        ALL_PROSPECT_LABELS.add(_ov["label"])
+        if _ov["label"] not in ALL_PROSPECT_TABLES:
+            ALL_PROSPECT_TABLES[_ov["label"]] = api.base(_ov["base_id"]).table(_ov["table_id"])
+
 # --------------- Helpers ---------------
 DOMAIN_RE = re.compile(r"^[a-z0-9.-]+$", re.IGNORECASE)
 
@@ -204,7 +333,14 @@ def read_uploaded_table(uploaded_file) -> pd.DataFrame:
     name = uploaded_file.name.lower()
     try:
         if name.endswith(".csv"):
-            return pd.read_csv(uploaded_file, dtype=str)
+            raw_bytes = uploaded_file.read()
+            for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+                try:
+                    return pd.read_csv(io.BytesIO(raw_bytes), dtype=str, encoding=enc)
+                except UnicodeDecodeError:
+                    continue
+            st.error("Could not decode the CSV file. Please save it as UTF-8 and re-upload.")
+            st.stop()
         elif name.endswith((".xlsx", ".xlsm", ".xltx", ".xltm")):
             # Requires openpyxl
             return pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
@@ -963,6 +1099,17 @@ if "extra_prospect" in vertical_config:
     extra_prospect_sources = [extra]
     current_vertical_prospect_labels.add(extra["label"])
 
+# Add any auto-created overflow bases for the current vertical
+for _ov in _overflow_map.get(vertical_config["prospect_label"], []):
+    extra_prospect_sources.append({
+        "label": _ov["label"],
+        "base_id": _ov["base_id"],
+        "table_id": _ov["table_id"],
+        "is_disavow": False,
+        "is_database": False,
+    })
+    current_vertical_prospect_labels.add(_ov["label"])
+
 # ---- Build MANDATORY sources (cannot be deselected) ----
 # All other verticals' Prospect-Data bases are mandatory for Rule 1 (no simultaneous outreach)
 mandatory_prospect_sources = []
@@ -981,6 +1128,15 @@ for vname, vconfig in VERTICALS.items():
             ep["is_disavow"] = False
             ep["is_database"] = False
             mandatory_prospect_sources.append(ep)
+        # Include overflow bases for other verticals
+        for _ov in _overflow_map.get(vconfig["prospect_label"], []):
+            mandatory_prospect_sources.append({
+                "label": _ov["label"],
+                "base_id": _ov["base_id"],
+                "table_id": _ov["table_id"],
+                "is_disavow": False,
+                "is_database": False,
+            })
 
 # All Database, Disavow sources are also mandatory
 mandatory_db_sources = [dict(src) for src in DATABASE_SOURCES]
@@ -1122,6 +1278,131 @@ with tab_quick:
                     reason = "Brand new — not found in any source"
                 st.success(f"✅ **{norm}** — Safe to outreach")
                 st.caption(f"↳ {reason}")
+
+        # ---- Auto-push safe domains to Airtable ----
+        safe_domains = [
+            normalize_domain(d) for d in domains_to_check
+            if normalize_domain(d) and normalize_domain(d) not in qc_blocked
+        ]
+
+        if safe_domains:
+            qc_pushed_key = f"qc_autopushed_{selected_vertical}_{hash(frozenset(safe_domains))}"
+            qc_result_key = f"{qc_pushed_key}_result"
+
+            if st.session_state.get(qc_pushed_key):
+                st.info(st.session_state[qc_result_key])
+            else:
+                st.markdown("---")
+                with st.spinner(f"Auto-pushing {len(safe_domains)} safe domain(s) to {push_target_label}…"):
+                    try:
+                        existing_recs = push_table.all(fields=["Domain"])
+                        qc_existing_lookup = {}
+                        for rec in existing_recs:
+                            raw_d = rec.get("fields", {}).get("Domain", "")
+                            norm_d = normalize_domain(raw_d)
+                            if norm_d:
+                                qc_existing_lookup[norm_d.lower()] = rec["id"]
+                    except Exception as e:
+                        logging.error(f"Quick check push: error fetching existing records: {e}")
+                        qc_existing_lookup = {}
+
+                    reoutreach_set_qc = qc_safe_3m | qc_safe_4m | qc_safe_12m
+                    qc_to_create, qc_to_update, qc_skipped = [], [], 0
+                    for d in safe_domains:
+                        rec_id = qc_existing_lookup.get(d.lower())
+                        if rec_id:
+                            if d in reoutreach_set_qc:
+                                qc_to_update.append((d, rec_id))
+                            else:
+                                qc_skipped += 1
+                        else:
+                            qc_to_create.append(d)
+
+                    date_str = datetime.now().strftime("%Y-%m-%d")
+                    common_fields = {"Date": date_str, "Added By Name": user_name, "Added By Email": user_email}
+                    BATCH_SIZE = 10
+                    qc_created = qc_updated = qc_errors = 0
+                    qc_error_details = []
+                    qc_table_limit_hit = False
+                    qc_overflow_info = None
+                    qc_overflow_created = 0
+
+                    for batch in [qc_to_create[i:i+BATCH_SIZE] for i in range(0, len(qc_to_create), BATCH_SIZE)]:
+                        if qc_table_limit_hit:
+                            if qc_overflow_info is None:
+                                result = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
+                                if result:
+                                    ob_id, ot_id, ol = result
+                                    qc_overflow_info = (ob_id, ot_id, ol, api.base(ob_id).table(ot_id))
+                                    discover_overflow_bases.clear()
+                                else:
+                                    qc_errors += len(batch)
+                                    for d in batch:
+                                        qc_error_details.append(f"{d}: overflow base creation failed")
+                                    continue
+                            if qc_overflow_info:
+                                _, _, _, ov_ref = qc_overflow_info
+                                try:
+                                    ov_ref.batch_create([{"Domain": d, **common_fields} for d in batch])
+                                    qc_overflow_created += len(batch)
+                                    qc_created += len(batch)
+                                except Exception as e:
+                                    qc_errors += len(batch)
+                                    for d in batch:
+                                        qc_error_details.append(f"{d} (overflow): {str(e)}")
+                            continue
+
+                        try:
+                            push_table.batch_create([{"Domain": d, **common_fields} for d in batch])
+                            qc_created += len(batch)
+                        except Exception as e:
+                            qc_errors += len(batch)
+                            for d in batch:
+                                qc_error_details.append(f"{d}: {str(e)}")
+                            if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
+                                qc_table_limit_hit = True
+
+                    for batch in [qc_to_update[i:i+BATCH_SIZE] for i in range(0, len(qc_to_update), BATCH_SIZE)]:
+                        try:
+                            push_table.batch_update([{"id": rid, "fields": common_fields} for _, rid in batch])
+                            qc_updated += len(batch)
+                        except Exception as e:
+                            qc_errors += len(batch)
+                            for d, _ in batch:
+                                qc_error_details.append(f"{d} (update): {str(e)}")
+
+                    fetch_existing_domains.clear()
+
+                    total_qc = qc_created + qc_updated
+                    parts = [f"New: {qc_created}"]
+                    if qc_updated:
+                        parts.append(f"Re-outreach updated: {qc_updated}")
+                    if qc_skipped:
+                        parts.append(f"Skipped (already existed): {qc_skipped}")
+                    if qc_errors:
+                        parts.append(f"Errors: {qc_errors}")
+
+                    qc_result_msg = (
+                        f"✅ **{total_qc} domain(s) pushed to `{push_target_label}`** — "
+                        + " | ".join(parts)
+                    )
+                    st.success(qc_result_msg)
+                    st.session_state[qc_pushed_key] = True
+                    st.session_state[qc_result_key] = qc_result_msg
+
+                    if qc_overflow_info:
+                        _, _, ol, _ = qc_overflow_info
+                        st.info(
+                            f"**Overflow base auto-created: `{ol}`**  \n"
+                            f"{qc_overflow_created} domain(s) pushed there because `{push_target_label}` was full.  \n"
+                            f"It will be automatically included in duplicate checks from the next session onwards."
+                        )
+                    if qc_errors and qc_error_details:
+                        with st.expander("View push error details"):
+                            for err in qc_error_details[:10]:
+                                st.text(err)
+                            if len(qc_error_details) > 10:
+                                st.text(f"... and {len(qc_error_details) - 10} more")
 
 # ===================== TAB 2: FULL UPLOAD & PUSH =====================
 with tab_full:
@@ -1504,8 +1785,45 @@ with tab_full:
 
                         # Batch create (Airtable limit: 10 per request)
                         BATCH_SIZE = 10
+                        table_limit_hit = False
+                        overflow_info = None        # (base_id, table_id, label, table_ref) once created
+                        overflow_created = 0
                         create_batches = [to_create[i:i+BATCH_SIZE] for i in range(0, len(to_create), BATCH_SIZE)]
                         for batch_idx, batch in enumerate(create_batches):
+                            # --- Route to overflow base if primary is full ---
+                            if table_limit_hit:
+                                if overflow_info is None:
+                                    with st.spinner(f"Primary table full — creating overflow base…"):
+                                        result = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
+                                    if result:
+                                        ov_base_id, ov_table_id, ov_label = result
+                                        ov_table_ref = api.base(ov_base_id).table(ov_table_id)
+                                        overflow_info = (ov_base_id, ov_table_id, ov_label, ov_table_ref)
+                                        discover_overflow_bases.clear()  # force rediscovery next session
+                                    else:
+                                        # Creation failed — count remaining as errors
+                                        errors += len(batch)
+                                        for d in batch:
+                                            error_details.append(f"{d}: table limit hit and overflow base creation failed")
+                                        continue
+
+                                if overflow_info:
+                                    _, _, _, ov_table_ref = overflow_info
+                                    try:
+                                        records_payload = [{"Domain": d, **common_fields} for d in batch]
+                                        ov_table_ref.batch_create(records_payload)
+                                        overflow_created += len(batch)
+                                        created += len(batch)
+                                    except Exception as e:
+                                        errors += len(batch)
+                                        for d in batch:
+                                            error_details.append(f"{d} (overflow): {str(e)}")
+                                        logging.error(f"Error writing to overflow base: {e}")
+                                if total > 0:
+                                    progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
+                                continue
+
+                            # --- Normal create to primary base ---
                             try:
                                 records_payload = [{"Domain": d, **common_fields} for d in batch]
                                 push_table.batch_create(records_payload)
@@ -1515,6 +1833,8 @@ with tab_full:
                                 for d in batch:
                                     error_details.append(f"{d}: {str(e)}")
                                 logging.error(f"Error batch-creating records: {e}")
+                                if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
+                                    table_limit_hit = True
                             if total > 0:
                                 progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
 
@@ -1555,6 +1875,15 @@ with tab_full:
                         # Store result so it persists on re-render without re-pushing
                         st.session_state[pushed_key] = True
                         st.session_state[pushed_result_key] = result_msg
+
+                        # Show overflow base notice if one was created
+                        if overflow_info:
+                            ov_base_id, ov_table_id, ov_label, _ = overflow_info
+                            st.info(
+                                f"**Overflow base auto-created: `{ov_label}`**  \n"
+                                f"{overflow_created} domain(s) pushed there because `{push_target_label}` was full.  \n"
+                                f"It will be automatically included in duplicate checks from the next session onwards."
+                            )
 
                         if errors > 0 and error_details:
                             with st.expander("View error details"):
