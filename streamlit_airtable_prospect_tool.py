@@ -1332,44 +1332,54 @@ with tab_quick:
                     BATCH_SIZE = 10
                     qc_created = qc_updated = qc_errors = 0
                     qc_error_details = []
-                    qc_table_limit_hit = False
                     qc_overflow_info = None
                     qc_overflow_created = 0
 
                     for batch in [qc_to_create[i:i+BATCH_SIZE] for i in range(0, len(qc_to_create), BATCH_SIZE)]:
-                        if qc_table_limit_hit:
-                            if qc_overflow_info is None:
-                                result = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
-                                if result:
-                                    ob_id, ot_id, ol = result
-                                    qc_overflow_info = (ob_id, ot_id, ol, api.base(ob_id).table(ot_id))
+                        records_payload = [{"Domain": d, **common_fields} for d in batch]
+
+                        # Route straight to overflow if already created
+                        if qc_overflow_info:
+                            _, _, _, ov_ref = qc_overflow_info
+                            try:
+                                ov_ref.batch_create(records_payload)
+                                qc_overflow_created += len(batch)
+                                qc_created += len(batch)
+                            except Exception as e:
+                                qc_errors += len(batch)
+                                for d in batch:
+                                    qc_error_details.append(f"{d} (overflow): {str(e)}")
+                            continue
+
+                        # Try primary base
+                        try:
+                            push_table.batch_create(records_payload)
+                            qc_created += len(batch)
+                        except Exception as e:
+                            if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
+                                # Primary full — create overflow NOW and retry this same batch
+                                ov_result = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
+                                if ov_result:
+                                    ob_id, ot_id, ol = ov_result
+                                    ov_ref = api.base(ob_id).table(ot_id)
+                                    qc_overflow_info = (ob_id, ot_id, ol, ov_ref)
                                     discover_overflow_bases.clear()
+                                    try:
+                                        ov_ref.batch_create(records_payload)
+                                        qc_overflow_created += len(batch)
+                                        qc_created += len(batch)
+                                    except Exception as ov_e:
+                                        qc_errors += len(batch)
+                                        for d in batch:
+                                            qc_error_details.append(f"{d} (overflow): {str(ov_e)}")
                                 else:
                                     qc_errors += len(batch)
                                     for d in batch:
                                         qc_error_details.append(f"{d}: overflow base creation failed")
-                                    continue
-                            if qc_overflow_info:
-                                _, _, _, ov_ref = qc_overflow_info
-                                try:
-                                    ov_ref.batch_create([{"Domain": d, **common_fields} for d in batch])
-                                    qc_overflow_created += len(batch)
-                                    qc_created += len(batch)
-                                except Exception as e:
-                                    qc_errors += len(batch)
-                                    for d in batch:
-                                        qc_error_details.append(f"{d} (overflow): {str(e)}")
-                            continue
-
-                        try:
-                            push_table.batch_create([{"Domain": d, **common_fields} for d in batch])
-                            qc_created += len(batch)
-                        except Exception as e:
-                            qc_errors += len(batch)
-                            for d in batch:
-                                qc_error_details.append(f"{d}: {str(e)}")
-                            if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
-                                qc_table_limit_hit = True
+                            else:
+                                qc_errors += len(batch)
+                                for d in batch:
+                                    qc_error_details.append(f"{d}: {str(e)}")
 
                     for batch in [qc_to_update[i:i+BATCH_SIZE] for i in range(0, len(qc_to_update), BATCH_SIZE)]:
                         try:
@@ -1794,56 +1804,59 @@ with tab_full:
 
                         # Batch create (Airtable limit: 10 per request)
                         BATCH_SIZE = 10
-                        table_limit_hit = False
                         overflow_info = None        # (base_id, table_id, label, table_ref) once created
                         overflow_created = 0
                         create_batches = [to_create[i:i+BATCH_SIZE] for i in range(0, len(to_create), BATCH_SIZE)]
-                        for batch_idx, batch in enumerate(create_batches):
-                            # --- Route to overflow base if primary is full ---
-                            if table_limit_hit:
-                                if overflow_info is None:
-                                    with st.spinner(f"Primary table full — creating overflow base…"):
-                                        result = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
-                                    if result:
-                                        ov_base_id, ov_table_id, ov_label = result
-                                        ov_table_ref = api.base(ov_base_id).table(ov_table_id)
-                                        overflow_info = (ov_base_id, ov_table_id, ov_label, ov_table_ref)
-                                        discover_overflow_bases.clear()  # force rediscovery next session
-                                    else:
-                                        # Creation failed — count remaining as errors
-                                        errors += len(batch)
-                                        for d in batch:
-                                            error_details.append(f"{d}: table limit hit and overflow base creation failed")
-                                        continue
+                        for batch in create_batches:
+                            records_payload = [{"Domain": d, **common_fields} for d in batch]
 
-                                if overflow_info:
-                                    _, _, _, ov_table_ref = overflow_info
-                                    try:
-                                        records_payload = [{"Domain": d, **common_fields} for d in batch]
-                                        ov_table_ref.batch_create(records_payload)
-                                        overflow_created += len(batch)
-                                        created += len(batch)
-                                    except Exception as e:
-                                        errors += len(batch)
-                                        for d in batch:
-                                            error_details.append(f"{d} (overflow): {str(e)}")
-                                        logging.error(f"Error writing to overflow base: {e}")
+                            # Route straight to overflow if already created
+                            if overflow_info:
+                                _, _, _, ov_table_ref = overflow_info
+                                try:
+                                    ov_table_ref.batch_create(records_payload)
+                                    overflow_created += len(batch)
+                                    created += len(batch)
+                                except Exception as e:
+                                    errors += len(batch)
+                                    for d in batch:
+                                        error_details.append(f"{d} (overflow): {str(e)}")
+                                    logging.error(f"Error writing to overflow base: {e}")
                                 if total > 0:
                                     progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
                                 continue
 
-                            # --- Normal create to primary base ---
+                            # Try primary base
                             try:
-                                records_payload = [{"Domain": d, **common_fields} for d in batch]
                                 push_table.batch_create(records_payload)
                                 created += len(batch)
                             except Exception as e:
-                                errors += len(batch)
-                                for d in batch:
-                                    error_details.append(f"{d}: {str(e)}")
-                                logging.error(f"Error batch-creating records: {e}")
                                 if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
-                                    table_limit_hit = True
+                                    # Primary full — create overflow NOW and retry this same batch
+                                    with st.spinner("Primary table full — creating overflow base…"):
+                                        ov_result = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID)
+                                    if ov_result:
+                                        ov_base_id, ov_table_id, ov_label = ov_result
+                                        ov_table_ref = api.base(ov_base_id).table(ov_table_id)
+                                        overflow_info = (ov_base_id, ov_table_id, ov_label, ov_table_ref)
+                                        discover_overflow_bases.clear()
+                                        try:
+                                            ov_table_ref.batch_create(records_payload)
+                                            overflow_created += len(batch)
+                                            created += len(batch)
+                                        except Exception as ov_e:
+                                            errors += len(batch)
+                                            for d in batch:
+                                                error_details.append(f"{d} (overflow): {str(ov_e)}")
+                                    else:
+                                        errors += len(batch)
+                                        for d in batch:
+                                            error_details.append(f"{d}: table limit hit and overflow base creation failed")
+                                else:
+                                    errors += len(batch)
+                                    for d in batch:
+                                        error_details.append(f"{d}: {str(e)}")
+                                    logging.error(f"Error batch-creating records: {e}")
                             if total > 0:
                                 progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
 
