@@ -1391,10 +1391,15 @@ with tab_full:
         with st.spinner("Reading file..."):
             df_new = read_uploaded_table(uploaded_file)
 
-        if "Domain" not in df_new.columns:
-            st.error("Your file must have a 'Domain' column.")
+        # Find domain column case-insensitively, accepting singular and plural
+        _domain_col = next(
+            (c for c in df_new.columns if c.strip().lower() in ("domain", "domains")),
+            None,
+        )
+        if not _domain_col:
+            st.error("Your file must have a 'Domain' (or 'Domains') column.")
         else:
-            raw = df_new["Domain"].dropna().astype(str).tolist()
+            raw = df_new[_domain_col].dropna().astype(str).tolist()
             new_domains = {d for d in (normalize_domain(x) for x in raw) if d}
 
             st.write(f"Uploaded rows: **{len(raw)}** | After normalization: **{len(new_domains)}**")
