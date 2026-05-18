@@ -301,6 +301,7 @@ def discover_overflow_bases() -> dict[str, list[dict]]:
 # Each mapped to the vertical(s) it belongs to for per-vertical threshold logic.
 # "verticals" list indicates which vertical(s) this database represents.
 DATABASE_SOURCES = [
+    {"label": "AI-Outreach-GetViktor (Staging Live Links)", "base_id": "appvWrRHWFjG05Dbc", "table_id": "tbls2s6EQk4toHxel", "is_disavow": False, "is_database": True, "verticals": ["All brands"]},
     {"label": "GDC-Database",        "base_id": "appUoOvkqzJvyyMvC", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": True, "verticals": ["GDC"]},
     {"label": "WB-Database",         "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4", "is_disavow": False, "is_database": True, "verticals": ["WhichBingo"]},
     {"label": "Freebets-Database",   "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F", "is_disavow": False, "is_database": True, "verticals": ["Freebets"]},
