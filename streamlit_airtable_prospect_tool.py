@@ -227,60 +227,29 @@ def test_base_access(base_id: str, table_id: str) -> tuple[bool, str]:
             return False, f"403 Forbidden - Token may not have access to base {base_id}"
         return False, f"Error: {error_str[:150]}"
 
-# ---- Verticals: each has its own Prospect-Data push target ----
-# workspace_id: required for auto-creating overflow bases when a table hits its record limit.
-# Find it in Airtable → click your workspace name → Settings → copy the ID (starts with 'wsp').
-VERTICALS = {
-    "GDC": {
-        "prospect_base_id": "appVyIiM5boVyoBhf",
-        "prospect_table_id": "tbliCOQZY9RICLsLP",
-        "prospect_label": "Prospect-Data-GDC-1",
-        "workspace_id": "wsp0AMYMJnoJ3KDLB",
-        "extra_prospect": {"label": "Prospect-Data-GDC", "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP"},
-    },
-    "WhichBingo": {
-        "prospect_base_id": "appphIl2Iq8kloRGD",
-        "prospect_table_id": "tbliCOQZY9RICLsLP",
-        "prospect_label": "Prospect-Data-WhichBingo",
-        "workspace_id": "wsp0AMYMJnoJ3KDLB",
-    },
-    "BonusFinder": {
-        "prospect_base_id": "app7LTnZSYutwKzsx",
-        "prospect_table_id": "tbliCOQZY9RICLsLP",
-        "prospect_label": "Prospect-Data-BonusFinder",
-        "workspace_id": "wsp0AMYMJnoJ3KDLB",
-    },
-    "Freebets": {
-        "prospect_base_id": "appzbw2BJVm5QXCAa",
-        "prospect_table_id": "tbliCOQZY9RICLsLP",
-        "prospect_label": "Prospect-Data-Freebets",
-        "workspace_id": "wsp0AMYMJnoJ3KDLB",
-    },
-    "Bookies": {
-        "prospect_base_id": "appZfavfEMOpPbqiP",
-        "prospect_table_id": "tbliCOQZY9RICLsLP",
-        "prospect_label": "Prospect-Data-Bookies",
-        "workspace_id": "wsp0AMYMJnoJ3KDLB",
-    },
-    "Casinos": {
-        "prospect_base_id": "appO5ta4j5rUaG9XL",
-        "prospect_table_id": "tbliCOQZY9RICLsLP",
-        "prospect_label": "Prospect-Data-Casinos",
-        "workspace_id": "wsp0AMYMJnoJ3KDLB",
-    },
-    "Rotowire": {
-        "prospect_base_id": "appwEdvjcFpq4qiHj",
-        "prospect_table_id": "tbliCOQZY9RICLsLP",
-        "prospect_label": "Prospect-Data-Rotowire",
-        "workspace_id": "wsp0AMYMJnoJ3KDLB",
-    },
-    "States": {
-        "prospect_base_id": "appzVpYiLO90EgRgj",
-        "prospect_table_id": "tbliCOQZY9RICLsLP",
-        "prospect_label": "Prospect-Data-States-Sites",
-        "workspace_id": "wsp0AMYMJnoJ3KDLB",
-    },
-}
+# ---- Unified push target (single shared Prospect-Data base for all brands) ----
+UNIFIED_PROSPECT_BASE_ID  = "appElL9SUbWs4t9cW"
+UNIFIED_PROSPECT_TABLE_ID = "tbliCOQZY9RICLsLP"
+UNIFIED_PROSPECT_LABEL    = "Prospect-Data-GDC-Group"
+UNIFIED_WORKSPACE_ID      = "wsp0AMYMJnoJ3KDLB"
+
+# ---- Cooldown: single threshold for all live-link re-outreach ----
+COOLDOWN_MONTHS = 6
+
+# ---- Legacy per-brand Prospect-Data bases (read-only during soft-start) ----
+# These are checked for deduplication so existing historical records still block
+# outreach. No new records are pushed here — all pushes go to UNIFIED base.
+LEGACY_PROSPECT_SOURCES = [
+    {"label": "Prospect-Data-GDC-1",        "base_id": "appVyIiM5boVyoBhf", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-GDC",           "base_id": "appHdhjsWVRxaCvcR", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-WhichBingo",    "base_id": "appphIl2Iq8kloRGD", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-BonusFinder",   "base_id": "app7LTnZSYutwKzsx", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-Freebets",      "base_id": "appzbw2BJVm5QXCAa", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-Bookies",       "base_id": "appZfavfEMOpPbqiP", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-Casinos",       "base_id": "appO5ta4j5rUaG9XL", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-Rotowire",      "base_id": "appwEdvjcFpq4qiHj", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-States-Sites",  "base_id": "appzVpYiLO90EgRgj", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+]
 
 @st.cache_data(ttl=600, show_spinner=False)
 def discover_overflow_bases() -> dict[str, list[dict]]:
@@ -289,16 +258,13 @@ def discover_overflow_bases() -> dict[str, list[dict]]:
     Overflow bases are named '{primary_label}-2', '-3', etc.
     Returns {primary_label: [{"label", "base_id", "table_id", "num"}, ...]} sorted by num.
     """
-    # Build root → primary_label map, stripping any trailing number from the primary label
-    # e.g. "Prospect-Data-GDC-1" → root "Prospect-Data-GDC" → primary "Prospect-Data-GDC-1"
-    #      "Prospect-Data-Rotowire" → root "Prospect-Data-Rotowire" → primary "Prospect-Data-Rotowire"
+    # Track overflow bases only for the unified push target.
     suffix_re = re.compile(r"(-\d+)$")
     primary_root_map: dict[str, str] = {}
-    for vconfig in VERTICALS.values():
-        label = vconfig["prospect_label"]
-        m_label = suffix_re.search(label)
-        root = label[: m_label.start()] if m_label else label
-        primary_root_map[root] = label
+    label = UNIFIED_PROSPECT_LABEL
+    m_label = suffix_re.search(label)
+    root = label[: m_label.start()] if m_label else label
+    primary_root_map[root] = label
 
     result: dict[str, list[dict]] = {}
     try:
@@ -351,12 +317,10 @@ DISAVOW_SOURCES = [
     {"label": "Outreach-Rejected-Sites", "base_id": "appTf6MmZDgouu8SN", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True, "is_database": False},
 ]
 
-# ---- Build a set of ALL prospect-data labels across all verticals ----
-ALL_PROSPECT_LABELS: set[str] = set()
-for _vconfig in VERTICALS.values():
-    ALL_PROSPECT_LABELS.add(_vconfig["prospect_label"])
-    if "extra_prospect" in _vconfig:
-        ALL_PROSPECT_LABELS.add(_vconfig["extra_prospect"]["label"])
+# ---- Build a set of ALL prospect-data labels (unified + all legacy) ----
+ALL_PROSPECT_LABELS: set[str] = {UNIFIED_PROSPECT_LABEL}
+for _lsrc in LEGACY_PROSPECT_SOURCES:
+    ALL_PROSPECT_LABELS.add(_lsrc["label"])
 
 # ---- Build a set of ALL database labels ----
 ALL_DATABASE_LABELS: set[str] = {src["label"] for src in DATABASE_SOURCES}
@@ -364,19 +328,15 @@ ALL_DATABASE_LABELS: set[str] = {src["label"] for src in DATABASE_SOURCES}
 # ---- Build a set of ALL disavow labels ----
 ALL_DISAVOW_LABELS: set[str] = {src["label"] for src in DISAVOW_SOURCES}
 
-# ---- Build all prospect table references for real-time cross-vertical checks ----
-# These are used in the race-condition guard during push to detect concurrent pushes.
-ALL_PROSPECT_TABLES: dict[str, object] = {}
-for _vname, _vconfig in VERTICALS.items():
-    _plabel = _vconfig["prospect_label"]
-    if _plabel not in ALL_PROSPECT_TABLES:
-        ALL_PROSPECT_TABLES[_plabel] = api.base(_vconfig["prospect_base_id"]).table(_vconfig["prospect_table_id"])
-    if "extra_prospect" in _vconfig:
-        _ep = _vconfig["extra_prospect"]
-        if _ep["label"] not in ALL_PROSPECT_TABLES:
-            ALL_PROSPECT_TABLES[_ep["label"]] = api.base(_ep["base_id"]).table(_ep["table_id"])
+# ---- Build all prospect table references for race-condition guard ----
+ALL_PROSPECT_TABLES: dict[str, object] = {
+    UNIFIED_PROSPECT_LABEL: api.base(UNIFIED_PROSPECT_BASE_ID).table(UNIFIED_PROSPECT_TABLE_ID)
+}
+for _lsrc in LEGACY_PROSPECT_SOURCES:
+    if _lsrc["label"] not in ALL_PROSPECT_TABLES:
+        ALL_PROSPECT_TABLES[_lsrc["label"]] = api.base(_lsrc["base_id"]).table(_lsrc["table_id"])
 
-# ---- Register any auto-created overflow bases into the global sets ----
+# ---- Register any auto-created overflow bases for the unified target ----
 _overflow_map: dict[str, list[dict]] = discover_overflow_bases()
 for _primary_label, _overflows in _overflow_map.items():
     for _ov in _overflows:
@@ -768,61 +728,43 @@ def apply_smart_dedup_rules(
     all_domains: set[str],
     domain_to_sources: dict[str, set[str]],
     domain_dates_by_source: dict[str, dict[str, datetime]],
-    selected_vertical: str,
-) -> tuple[set[str], set[str], set[str], set[str]]:
-    """Apply the 4 business rules to determine which domains to block/allow.
+) -> tuple[set[str], set[str], set[str]]:
+    """Apply the 3 business rules to determine which domains to block/allow.
 
-    Rules:
-        1. No simultaneous outreach - domains in ANY Prospect-Data source are blocked (handled by mandatory sources)
-        2. Live link (Database) sites safe after 12 months for SAME vertical
-        3. Prospect-only domains (no live link) safe after 3 months for ALL builders
-        4. Live link (Database) sites safe after 4 months for DIFFERENT vertical
-
-    Args:
-        all_domains: Set of all domains currently in the blocking set (from fetch)
-        domain_to_sources: Dict mapping domain -> set of source labels
-        domain_dates_by_source: Dict mapping source label -> dict(domain -> date)
-        selected_vertical: The vertical the current builder selected
+    Rules (all brands are now one team — no same/different vertical distinction):
+        1. No simultaneous outreach - domains in ANY Prospect-Data source are blocked
+        2. Live link (Database) sites safe after COOLDOWN_MONTHS (6 months) for any brand
+        3. Prospect-only domains (no live link) safe after 45 days
 
     Returns:
         tuple: (
             final_blocked: domains that should remain blocked,
             safe_prospect_45d: domains safe due to 45-day no-result rule (Rule 3),
-            safe_db_diff_vertical_4m: domains safe due to 4-month different-client rule (Rule 4),
-            safe_db_same_vertical_12m: domains safe due to 12-month same-vertical rule (Rule 2),
+            safe_db_6m: domains safe due to 6-month live-link cooldown (Rule 2),
         )
     """
     now = datetime.now()
     threshold_45d = now - timedelta(days=45)
-    threshold_4m = now - timedelta(days=4 * 30)
-    threshold_12m = now - timedelta(days=12 * 30)
+    threshold_6m  = now - timedelta(days=COOLDOWN_MONTHS * 30)
 
-    # Build lookup: which database labels belong to which verticals
-    db_label_to_verticals: dict[str, list[str]] = {}
-    for db_src in DATABASE_SOURCES:
-        db_label_to_verticals[db_src["label"]] = db_src["verticals"]
-
-    safe_prospect_45d: set[str] = set()       # Rule 3: no-result after 45 days
-    safe_db_diff_vertical_4m: set[str] = set()  # Rule 4: live link, different client, 4+ months
-    safe_db_same_vertical_12m: set[str] = set()  # Rule 2: live link, same client, 12+ months
+    safe_prospect_45d: set[str] = set()
+    safe_db_6m: set[str] = set()
 
     for domain in all_domains:
         sources = domain_to_sources.get(domain, set())
         if not sources:
             continue
 
-        # Classify which source types this domain appears in
         in_prospect_sources = sources.intersection(ALL_PROSPECT_LABELS)
         in_database_sources = sources.intersection(ALL_DATABASE_LABELS)
-        in_disavow_sources = sources.intersection(ALL_DISAVOW_LABELS)
+        in_disavow_sources  = sources.intersection(ALL_DISAVOW_LABELS)
 
-        # Disavow: ALWAYS blocked, skip any other logic
+        # Disavow: ALWAYS blocked
         if in_disavow_sources:
             continue
 
-        # --- Rule 3: Domain is ONLY in Prospect-Data (no live link), older than 45 days ---
+        # --- Rule 3: Prospect-only (no live link), older than 45 days → safe ---
         if in_prospect_sources and not in_database_sources:
-            # Check if ALL prospect entries for this domain are older than 45 days
             all_old_enough = True
             has_date = False
             for plabel in in_prospect_sources:
@@ -830,19 +772,17 @@ def apply_smart_dedup_rules(
                     dates = domain_dates_by_source[plabel]
                     if domain in dates:
                         has_date = True
-                        domain_date = make_tz_naive(dates[domain])
-                        if domain_date >= threshold_45d:
+                        if make_tz_naive(dates[domain]) >= threshold_45d:
                             all_old_enough = False
                             break
-
             if has_date and all_old_enough:
                 safe_prospect_45d.add(domain)
-            continue  # Don't apply database rules to prospect-only domains
+            continue
 
-        # --- Rules 2 & 4: Domain is in Database source(s) (live link confirmed) ---
+        # --- Rule 2: Live link confirmed, older than 6 months → safe ---
         if in_database_sources:
-            # Rule 1 override: if domain is also in a recent Prospect-Data entry
-            # (added within 3 months), someone is actively outreaching - keep blocked.
+            # If domain also has a recent Prospect-Data entry (within 45 days),
+            # someone is actively outreaching → keep blocked.
             if in_prospect_sources:
                 most_recent_prospect_date = None
                 for plabel in in_prospect_sources:
@@ -852,22 +792,10 @@ def apply_smart_dedup_rules(
                             pd_date = make_tz_naive(dates[domain])
                             if most_recent_prospect_date is None or pd_date > most_recent_prospect_date:
                                 most_recent_prospect_date = pd_date
-                # No date found or entry is within 45 days → active outreach → block
                 if most_recent_prospect_date is None or most_recent_prospect_date >= threshold_45d:
                     continue
 
-            # Determine if the database is same-vertical or different-vertical
-            is_same_vertical_db = False
-            is_diff_vertical_db = False
-
-            for db_label in in_database_sources:
-                db_verticals = db_label_to_verticals.get(db_label, [])
-                if selected_vertical in db_verticals:
-                    is_same_vertical_db = True
-                else:
-                    is_diff_vertical_db = True
-
-            # Get the most recent date across all database entries for this domain
+            # Get the most recent live-link date across all database sources
             most_recent_db_date = None
             for db_label in in_database_sources:
                 if db_label in domain_dates_by_source:
@@ -878,30 +806,15 @@ def apply_smart_dedup_rules(
                             most_recent_db_date = d_date
 
             if most_recent_db_date is None:
-                # No date found - cannot verify age, keep blocked (safe default)
-                continue
+                continue  # No date — cannot verify age, keep blocked
 
-            # Rule 2: Same vertical, 12+ months old -> safe
-            if is_same_vertical_db and not is_diff_vertical_db:
-                if most_recent_db_date < threshold_12m:
-                    safe_db_same_vertical_12m.add(domain)
+            if most_recent_db_date < threshold_6m:
+                safe_db_6m.add(domain)
 
-            # Rule 4: Different vertical only, 4+ months old -> safe
-            elif is_diff_vertical_db and not is_same_vertical_db:
-                if most_recent_db_date < threshold_4m:
-                    safe_db_diff_vertical_4m.add(domain)
-
-            # Both same AND different vertical databases have this domain
-            elif is_same_vertical_db and is_diff_vertical_db:
-                # Must satisfy the stricter rule (12 months for same vertical)
-                if most_recent_db_date < threshold_12m:
-                    safe_db_same_vertical_12m.add(domain)
-
-    # Combine all safe domains to remove from blocked set
-    all_safe = safe_prospect_45d | safe_db_diff_vertical_4m | safe_db_same_vertical_12m
+    all_safe = safe_prospect_45d | safe_db_6m
     final_blocked = all_domains - all_safe
 
-    return final_blocked, safe_prospect_45d, safe_db_diff_vertical_4m, safe_db_same_vertical_12m
+    return final_blocked, safe_prospect_45d, safe_db_6m
 
 
 def build_blocked_details(
@@ -1155,128 +1068,78 @@ if not is_valid_email(user_email):
     st.error("Please provide a valid email address.")
     st.stop()
 
-# ---------- Vertical selection ----------
-st.subheader("Vertical")
-selected_vertical = st.selectbox(
-    "Select your vertical:",
-    list(VERTICALS.keys()),
-    help="Each vertical pushes prospects to its own Prospect-Data base."
-)
-vertical_config = VERTICALS[selected_vertical]
+# No brand selection needed — outreach is brand-agnostic, brand assigned later in Airtable
 
-# Dynamic push target based on selected vertical.
-# If overflow bases exist for this vertical, push to the latest one instead of the primary.
-PUSH_BASE_ID = vertical_config["prospect_base_id"]
-PUSH_TABLE_ID = vertical_config["prospect_table_id"]
-push_target_label = vertical_config["prospect_label"]
+# ---- Push target: always the unified base (or its latest overflow) ----
+PUSH_BASE_ID  = UNIFIED_PROSPECT_BASE_ID
+PUSH_TABLE_ID = UNIFIED_PROSPECT_TABLE_ID
+push_target_label = UNIFIED_PROSPECT_LABEL
 
-_vertical_overflows = _overflow_map.get(vertical_config["prospect_label"], [])
-if _vertical_overflows:
-    _latest = _vertical_overflows[-1]  # sorted by num, so last = highest
-    PUSH_BASE_ID = _latest["base_id"]
-    PUSH_TABLE_ID = _latest["table_id"]
+_unified_overflows = _overflow_map.get(UNIFIED_PROSPECT_LABEL, [])
+if _unified_overflows:
+    _latest = _unified_overflows[-1]
+    PUSH_BASE_ID      = _latest["base_id"]
+    PUSH_TABLE_ID     = _latest["table_id"]
     push_target_label = _latest["label"]
 
 push_table = api.base(PUSH_BASE_ID).table(PUSH_TABLE_ID)
 
-# Build the prospect source (always checked - the push target itself)
-prospect_source = {
-    "label": vertical_config["prospect_label"],
-    "base_id": vertical_config["prospect_base_id"],
-    "table_id": vertical_config["prospect_table_id"],
+# ---- Unified prospect source (push target, always checked) ----
+unified_prospect_source = {
+    "label": UNIFIED_PROSPECT_LABEL,
+    "base_id": UNIFIED_PROSPECT_BASE_ID,
+    "table_id": UNIFIED_PROSPECT_TABLE_ID,
     "is_disavow": False,
     "is_database": False,
 }
 
-# Build the set of "prospect data labels" for this vertical (used for re-outreach identification)
-current_vertical_prospect_labels = {vertical_config["prospect_label"]}
-
-# Add extra prospect source if it exists (e.g., GDC has Prospect-Data-GDC as secondary)
-extra_prospect_sources = []
-if "extra_prospect" in vertical_config:
-    extra = dict(vertical_config["extra_prospect"])
-    extra["is_disavow"] = False
-    extra["is_database"] = False
-    extra_prospect_sources = [extra]
-    current_vertical_prospect_labels.add(extra["label"])
-
-# Add any auto-created overflow bases for the current vertical
-for _ov in _overflow_map.get(vertical_config["prospect_label"], []):
-    extra_prospect_sources.append({
+# ---- Add overflow sources for unified base ----
+unified_overflow_sources = []
+for _ov in _unified_overflows:
+    unified_overflow_sources.append({
         "label": _ov["label"],
         "base_id": _ov["base_id"],
         "table_id": _ov["table_id"],
         "is_disavow": False,
         "is_database": False,
     })
-    current_vertical_prospect_labels.add(_ov["label"])
 
-# ---- Build MANDATORY sources (cannot be deselected) ----
-# All other verticals' Prospect-Data bases are mandatory for Rule 1 (no simultaneous outreach)
-mandatory_prospect_sources = []
-for vname, vconfig in VERTICALS.items():
-    if vname != selected_vertical:
-        mandatory_prospect_sources.append({
-            "label": vconfig["prospect_label"],
-            "base_id": vconfig["prospect_base_id"],
-            "table_id": vconfig["prospect_table_id"],
-            "is_disavow": False,
-            "is_database": False,
-        })
-        # Include extra prospect sources from other verticals too
-        if "extra_prospect" in vconfig:
-            ep = dict(vconfig["extra_prospect"])
-            ep["is_disavow"] = False
-            ep["is_database"] = False
-            mandatory_prospect_sources.append(ep)
-        # Include overflow bases for other verticals
-        for _ov in _overflow_map.get(vconfig["prospect_label"], []):
-            mandatory_prospect_sources.append({
-                "label": _ov["label"],
-                "base_id": _ov["base_id"],
-                "table_id": _ov["table_id"],
-                "is_disavow": False,
-                "is_database": False,
-            })
-
-# All Database, Disavow sources are also mandatory
-mandatory_db_sources = [dict(src) for src in DATABASE_SOURCES]
+# ---- All mandatory sources ----
+mandatory_db_sources      = [dict(src) for src in DATABASE_SOURCES]
 mandatory_disavow_sources = [dict(src) for src in DISAVOW_SOURCES]
 
-# Combine all mandatory sources (these cannot be unchecked)
 mandatory_sources = (
-    [prospect_source]
-    + extra_prospect_sources
-    + mandatory_prospect_sources
+    [unified_prospect_source]
+    + unified_overflow_sources
+    + LEGACY_PROSPECT_SOURCES
     + mandatory_db_sources
     + mandatory_disavow_sources
 )
 
 st.caption(
-    f"`{push_target_label}` is the push target. "
-    f"All Prospect-Data bases, Database/Live Link sources, and Disavow lists are always checked. Push goes to `{push_target_label}` only."
+    f"Push target: `{push_target_label}`. "
+    f"All sources (unified + legacy + live links + disavow) are checked automatically."
 )
 
-# ---------- Source display (all mandatory, no multiselect) ----------
+# ---------- Source display ----------
 st.write("**Deduplication Sources (all mandatory):**")
 
-# Group sources for display
 with st.expander("View all deduplication sources"):
-    st.markdown(f"**Push Target:** `{prospect_source['label']}`")
-    if extra_prospect_sources:
-        st.markdown(f"**Extra Prospect Source:** `{extra_prospect_sources[0]['label']}`")
+    st.markdown(f"**Push Target (Unified):** `{UNIFIED_PROSPECT_LABEL}`")
+    if unified_overflow_sources:
+        for _ov_src in unified_overflow_sources:
+            st.markdown(f"- Overflow: `{_ov_src['label']}`")
 
     st.markdown("---")
-    st.markdown("**All Prospect-Data Sources (Rule 1 - no simultaneous outreach):**")
-    for src in mandatory_prospect_sources:
+    st.markdown("**Legacy Per-Brand Prospect Sources (read-only, historical dedup):**")
+    for src in LEGACY_PROSPECT_SOURCES:
         st.markdown(f"- `{src['label']}`")
 
     st.markdown("---")
-    st.markdown("**Database / Live Link Sources (Rules 2 & 4):**")
+    st.markdown(f"**Database / Live Link Sources (Rule 2: {COOLDOWN_MONTHS}-month cooldown):**")
     for src in mandatory_db_sources:
-        verticals_str = ", ".join(src.get("verticals", []))
-        same_or_diff = "SAME vertical" if selected_vertical in src.get("verticals", []) else "different vertical"
-        st.markdown(f"- `{src['label']}` ({verticals_str}) - *{same_or_diff}*")
+        brands_str = ", ".join(src.get("verticals", []))
+        st.markdown(f"- `{src['label']}` ({brands_str})")
 
     st.markdown("---")
     st.markdown("**Disavow / Rejected Lists (always blocked):**")
@@ -1346,12 +1209,12 @@ with tab_quick:
                 qc_existing, qc_d2s, qc_dates, qc_addedby = set(), {}, {}, {}
 
         if qc_d2s and qc_dates is not None:
-            qc_blocked, qc_safe_3m, qc_safe_4m, qc_safe_12m = apply_smart_dedup_rules(
-                qc_existing, qc_d2s, qc_dates, selected_vertical,
+            qc_blocked, qc_safe_3m, qc_safe_6m = apply_smart_dedup_rules(
+                qc_existing, qc_d2s, qc_dates,
             )
         else:
             qc_blocked = qc_existing
-            qc_safe_3m = qc_safe_4m = qc_safe_12m = set()
+            qc_safe_3m = qc_safe_6m = set()
 
         st.markdown("---")
         st.subheader(f"Results — {len(domains_to_check)} domain{'s' if len(domains_to_check) != 1 else ''} checked")
@@ -1369,12 +1232,10 @@ with tab_quick:
                 st.error(f"🚫 **{norm}** — BLOCKED")
                 st.dataframe(df_detail, use_container_width=True, hide_index=True)
             else:
-                if norm in qc_safe_12m:
-                    reason = "Rule 2: live link 12+ months ago (same vertical) — safe to re-outreach"
-                elif norm in qc_safe_4m:
-                    reason = "Rule 4: live link 4+ months ago (different vertical) — safe to re-outreach"
+                if norm in qc_safe_6m:
+                    reason = f"Rule 2: live link {COOLDOWN_MONTHS}+ months ago — safe to re-outreach"
                 elif norm in qc_safe_3m:
-                    reason = "Rule 3: prospected 3+ months ago, no live link — safe to re-outreach"
+                    reason = "Rule 3: prospected 45+ days ago, no live link — safe to re-outreach"
                 else:
                     reason = "Brand new — not found in any source"
                 st.success(f"✅ **{norm}** — Safe to outreach")
@@ -1387,7 +1248,7 @@ with tab_quick:
         ]
 
         if safe_domains:
-            qc_pushed_key = f"qc_autopushed_{selected_vertical}_{hash(frozenset(safe_domains))}"
+            qc_pushed_key = f"qc_autopushed_{hash(frozenset(safe_domains))}"
             qc_result_key = f"{qc_pushed_key}_result"
 
             if st.session_state.get(qc_pushed_key):
@@ -1407,7 +1268,7 @@ with tab_quick:
                         logging.error(f"Quick check push: error fetching existing records: {e}")
                         qc_existing_lookup = {}
 
-                    reoutreach_set_qc = qc_safe_3m | qc_safe_4m | qc_safe_12m
+                    reoutreach_set_qc = qc_safe_3m | qc_safe_6m
                     qc_to_create, qc_to_update, qc_skipped = [], [], 0
                     for d in safe_domains:
                         rec_id = qc_existing_lookup.get(d.lower())
@@ -1450,7 +1311,7 @@ with tab_quick:
                         except Exception as e:
                             if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
                                 # Primary full — create overflow NOW and retry this same batch
-                                ob_id, ot_id, ol, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID, config_workspace_id=vertical_config.get("workspace_id"))
+                                ob_id, ot_id, ol, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID, config_workspace_id=UNIFIED_WORKSPACE_ID)
                                 if ob_id:
                                     ov_ref = api.base(ob_id).table(ot_id)
                                     qc_overflow_info = (ob_id, ot_id, ol, ov_ref)
@@ -1539,13 +1400,12 @@ with tab_full:
 
             # ---------- Display rules ----------
             st.subheader("Active Rules")
-            st.markdown("""
+            st.markdown(f"""
 | Rule | Description | Threshold |
 |------|-------------|-----------|
-| **Rule 1** | No builders outreach to same site simultaneously | All Prospect-Data sources checked (mandatory) |
-| **Rule 2** | Live link sites can be reused by same vertical | **12 months** after link confirmed |
-| **Rule 3** | No-result prospects safe for all builders | **45 days** after outreach with no live link |
-| **Rule 4** | Live link sites can be reused by different vertical | **4 months** after link confirmed |
+| **Rule 1** | No one outreaches the same domain while it's active in any brand's Prospect-Data | All sources checked (mandatory) |
+| **Rule 2** | Domain with a confirmed live link can be re-outreached by any brand | **{COOLDOWN_MONTHS} months** after link confirmed |
+| **Rule 3** | Prospect-only domain (no live link) safe for anyone | **45 days** after outreach with no live link |
 | **Disavow** | Rejected/disavowed sites never reusable | Always blocked |
 """)
 
@@ -1597,37 +1457,32 @@ with tab_full:
 
             # ---------- Apply smart dedup rules ----------
             if domain_to_sources and domain_dates_by_source is not None:
-                blocked_domains, safe_prospect_45d, safe_db_diff_4m, safe_db_same_12m = apply_smart_dedup_rules(
+                blocked_domains, safe_prospect_45d, safe_db_6m = apply_smart_dedup_rules(
                     existing,
                     domain_to_sources,
                     domain_dates_by_source,
-                    selected_vertical,
                 )
             else:
                 blocked_domains = existing
                 safe_prospect_45d = set()
-                safe_db_diff_4m = set()
-                safe_db_same_12m = set()
+                safe_db_6m = set()
 
             # ---------- Calculate totals ----------
             total_domains = sum(source_counts.values())
             total_blocked = len(blocked_domains)
             total_safe_45d = len(safe_prospect_45d)
-            total_safe_4m = len(safe_db_diff_4m)
-            total_safe_12m = len(safe_db_same_12m)
+            total_safe_6m = len(safe_db_6m)
 
             # ---------- Display results ----------
             st.subheader("Results")
             st.info(f"**Total domains across all sources:** {total_domains:,}")
             st.error(f"**Blocked (active duplicates):** {total_blocked:,}")
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             with col1:
-                st.metric("Rule 2: Same vertical 12m+", f"{total_safe_12m:,}", help="Live link sites older than 12 months, safe for same vertical")
+                st.metric(f"Rule 2: Live link {COOLDOWN_MONTHS}m+", f"{total_safe_6m:,}", help=f"Live link sites older than {COOLDOWN_MONTHS} months — safe to re-outreach for any brand")
             with col2:
                 st.metric("Rule 3: No-result 45d+", f"{total_safe_45d:,}", help="Prospect-only domains older than 45 days with no live link")
-            with col3:
-                st.metric("Rule 4: Diff vertical 4m+", f"{total_safe_4m:,}", help="Live link sites older than 4 months, safe for different vertical")
 
             # Detailed breakdown
             with st.expander("View detailed breakdown by source"):
@@ -1649,13 +1504,11 @@ with tab_full:
                     if src.get("is_database"):
                         count = source_counts.get(src["label"], 0)
                         verticals_str = ", ".join(src.get("verticals", []))
-                        same_or_diff = "SAME" if selected_vertical in src.get("verticals", []) else "DIFF"
-                        threshold = "12 months" if same_or_diff == "SAME" else "4 months"
                         if count == 0:
                             permission_issues.append(src["label"])
-                            st.write(f"  - **{src['label']}** [{same_or_diff}, {threshold}]: {count:,} domains (warning: 0 domains)")
+                            st.write(f"  - **{src['label']}** ({verticals_str}) [{COOLDOWN_MONTHS}m cooldown]: {count:,} domains (warning: 0 domains)")
                         else:
-                            st.write(f"  - **{src['label']}** [{same_or_diff}, {threshold}]: {count:,} domains")
+                            st.write(f"  - **{src['label']}** ({verticals_str}) [{COOLDOWN_MONTHS}m cooldown]: {count:,} domains")
 
                 st.markdown("---")
                 st.markdown("**Disavow / Rejected Sources:**")
@@ -1695,9 +1548,8 @@ with tab_full:
 
             # Categorize safe domains that are in the upload
             reoutreach_45d_in_list = [d for d in new_to_outreach if d in safe_prospect_45d]
-            reoutreach_4m_in_list = [d for d in new_to_outreach if d in safe_db_diff_4m]
-            reoutreach_12m_in_list = [d for d in new_to_outreach if d in safe_db_same_12m]
-            completely_new = [d for d in new_to_outreach if d not in safe_prospect_45d and d not in safe_db_diff_4m and d not in safe_db_same_12m]
+            reoutreach_6m_in_list  = [d for d in new_to_outreach if d in safe_db_6m]
+            completely_new = [d for d in new_to_outreach if d not in safe_prospect_45d and d not in safe_db_6m]
 
             # Build blocked domains detail DataFrame
             df_blocked_details = build_blocked_details(
@@ -1711,15 +1563,13 @@ with tab_full:
             # ---------- Summary ----------
             st.success(f"**{len(new_to_outreach)}** domains safe to outreach  |  **{len(blocked_from_upload)}** blocked")
 
-            if reoutreach_45d_in_list or reoutreach_4m_in_list or reoutreach_12m_in_list:
+            if reoutreach_45d_in_list or reoutreach_6m_in_list:
                 st.markdown("**Safe-to-outreach breakdown:**")
                 st.write(f"- **{len(completely_new):,}** completely new domains")
                 if reoutreach_45d_in_list:
                     st.write(f"- **{len(reoutreach_45d_in_list):,}** re-outreach candidates (Rule 3: no live link after 45+ days)")
-                if reoutreach_4m_in_list:
-                    st.write(f"- **{len(reoutreach_4m_in_list):,}** available from different vertical (Rule 4: live link 4+ months ago)")
-                if reoutreach_12m_in_list:
-                    st.write(f"- **{len(reoutreach_12m_in_list):,}** available from same vertical (Rule 2: live link 12+ months ago)")
+                if reoutreach_6m_in_list:
+                    st.write(f"- **{len(reoutreach_6m_in_list):,}** re-outreach available (Rule 2: live link {COOLDOWN_MONTHS}+ months ago)")
 
             # ---------- Two-sheet display: tabs ----------
             tab_safe, tab_blocked = st.tabs([
@@ -1767,7 +1617,7 @@ with tab_full:
             # ---------- Auto-push to selected vertical's Prospect-Data base (duplicate-safe) ----------
             if new_to_outreach:
                 # Use a key based on the domain set so a new upload auto-pushes again
-                pushed_key = f"autopushed_{selected_vertical}_{hash(frozenset(new_to_outreach))}"
+                pushed_key = f"autopushed_{hash(frozenset(new_to_outreach))}"
                 pushed_result_key = f"{pushed_key}_result"
 
                 if st.session_state.get(pushed_key):
@@ -1838,11 +1688,10 @@ with tab_full:
                             st.stop()
 
                         if latest_domain_to_sources and latest_domain_dates_by_source is not None:
-                            latest_blocked, _, _, _ = apply_smart_dedup_rules(
+                            latest_blocked, _, _ = apply_smart_dedup_rules(
                                 latest_existing,
                                 latest_domain_to_sources,
                                 latest_domain_dates_by_source,
-                                selected_vertical,
                             )
                         else:
                             latest_blocked = latest_existing
@@ -1868,10 +1717,10 @@ with tab_full:
                                 to_push = [d for d in to_push if d not in cv_conflicts]
                                 st.warning(
                                     f"**{len(cv_conflicts)} domain(s) were just added by another team member "
-                                    f"in a different vertical and have been removed from your push list.**"
+                                    f"and have been removed from your push list.**"
                                 )
 
-                        reoutreach_set = safe_prospect_45d | safe_db_diff_4m | safe_db_same_12m
+                        reoutreach_set = safe_prospect_45d | safe_db_6m
 
                         created = 0
                         updated = 0
@@ -1943,7 +1792,7 @@ with tab_full:
                                 if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
                                     # Primary full — create overflow NOW and retry this same batch
                                     with st.spinner("Primary table full — creating overflow base…"):
-                                        ov_base_id, ov_table_id, ov_label, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID, config_workspace_id=vertical_config.get("workspace_id"))
+                                        ov_base_id, ov_table_id, ov_label, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID, config_workspace_id=UNIFIED_WORKSPACE_ID)
                                     if ov_base_id:
                                         ov_table_ref = api.base(ov_base_id).table(ov_table_id)
                                         overflow_info = (ov_base_id, ov_table_id, ov_label, ov_table_ref)
