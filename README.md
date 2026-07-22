@@ -25,12 +25,17 @@ pip install -r requirements.txt
 
 ```toml
 airtable_token = "your_airtable_pat_here"
+APP_PASSWORD   = "your_shared_access_password"
 ```
+
+The app is password-protected: on load it prompts for `APP_PASSWORD` and grants
+access only on a match. If `APP_PASSWORD` is not set, the tool fails closed and
+refuses to run. Share the password only with authorized users.
 
 3. Run locally:
 
 ```bash
-streamlit run streamlit_airtable_prospect_tool_tableid.py
+streamlit run streamlit_airtable_prospect_tool.py
 ```
 
 4. Deploy to Streamlit Cloud and add secrets in **App Settings → Secrets**.

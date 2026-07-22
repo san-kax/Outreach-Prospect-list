@@ -2,6 +2,7 @@ import io
 import os
 import re
 import time
+import hmac
 import logging
 import traceback
 import requests
@@ -25,6 +26,45 @@ from pyairtable import Api
 
 # ---------------- Config ----------------
 logging.basicConfig(level=logging.INFO)
+
+
+# ---------------- Password gate ----------------
+def check_password() -> None:
+    """Block the whole app behind a shared password until the user authenticates.
+
+    The expected password comes from Streamlit secrets (APP_PASSWORD /
+    app_password) or the APP_PASSWORD env var. If none is configured we fail
+    closed so the tool is never accidentally left open. Runs before the Airtable
+    token is read, so an unauthenticated visitor triggers no Airtable calls.
+    """
+    expected = (
+        st.secrets.get("APP_PASSWORD")
+        or st.secrets.get("app_password")
+        or os.getenv("APP_PASSWORD")
+    )
+    if not expected:
+        st.error(
+            "App password is not configured. Add `APP_PASSWORD` in Streamlit "
+            "secrets (or the APP_PASSWORD env var) before using this tool."
+        )
+        st.stop()
+
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title("🔒 Prospect Filtering & Airtable Sync")
+    st.caption("This tool is restricted. Enter the access password to continue.")
+    pwd = st.text_input("Password", type="password", key="pw_input")
+    if pwd:
+        # Constant-time comparison to avoid leaking the password via timing.
+        if hmac.compare_digest(pwd, str(expected)):
+            st.session_state["authenticated"] = True
+            return
+        st.error("Incorrect password.")
+    st.stop()
+
+
+check_password()
 
 # Accept either AIRTABLE_TOKEN or airtable_token from secrets/env
 AIRTABLE_TOKEN = (
@@ -318,10 +358,21 @@ DISAVOW_SOURCES = [
     {"label": "Outreach-Rejected-Sites", "base_id": "appTf6MmZDgouu8SN", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": True, "is_database": False},
 ]
 
-# ---- Build a set of ALL prospect-data labels (unified + all legacy) ----
+# ---- Deal Pipeline sources (active deals — Rule 1 "no simultaneous outreach") ----
+# Domains here have an active/agreed deal, so they're treated exactly like
+# Prospect-Data: blocked while present. These tables have no Date column, so
+# there is no time-based reuse — a domain stays blocked until it leaves the
+# pipeline. Read-only for dedup; nothing is ever pushed here.
+DEAL_PIPELINE_SOURCES = [
+    {"label": "AI-Outreach-GetViktor Deal Pipeline", "base_id": "appvWrRHWFjG05Dbc", "table_id": "tbl9U273iq1zvhjoV", "is_disavow": False, "is_database": False},
+]
+
+# ---- Build a set of ALL prospect-data labels (unified + all legacy + deal pipeline) ----
 ALL_PROSPECT_LABELS: set[str] = {UNIFIED_PROSPECT_LABEL}
 for _lsrc in LEGACY_PROSPECT_SOURCES:
     ALL_PROSPECT_LABELS.add(_lsrc["label"])
+for _dsrc in DEAL_PIPELINE_SOURCES:
+    ALL_PROSPECT_LABELS.add(_dsrc["label"])
 
 # ---- Build a set of ALL database labels ----
 ALL_DATABASE_LABELS: set[str] = {src["label"] for src in DATABASE_SOURCES}
@@ -336,6 +387,9 @@ ALL_PROSPECT_TABLES: dict[str, object] = {
 for _lsrc in LEGACY_PROSPECT_SOURCES:
     if _lsrc["label"] not in ALL_PROSPECT_TABLES:
         ALL_PROSPECT_TABLES[_lsrc["label"]] = api.base(_lsrc["base_id"]).table(_lsrc["table_id"])
+for _dsrc in DEAL_PIPELINE_SOURCES:
+    if _dsrc["label"] not in ALL_PROSPECT_TABLES:
+        ALL_PROSPECT_TABLES[_dsrc["label"]] = api.base(_dsrc["base_id"]).table(_dsrc["table_id"])
 
 # ---- Register any auto-created overflow bases for the unified target ----
 _overflow_map: dict[str, list[dict]] = discover_overflow_bases()
@@ -421,21 +475,27 @@ def parse_date(date_str: str) -> datetime | None:
         if isinstance(date_str, str):
             date_str = date_str.strip()
 
-            # Try dateutil parser first if available (handles most formats)
+            # Try dateutil parser first if available (handles most formats).
+            # dayfirst=True: brands are UK-facing and Airtable dates are shown/
+            # entered DD/MM/YYYY, so an ambiguous value like 05/11/2024 must be
+            # read as 5 Nov, not 11 May — a wrong reading can flip a domain
+            # across the 45-day / 6-month cooldown thresholds.
             if HAS_DATEUTIL:
                 try:
-                    return date_parser.parse(date_str, fuzzy=False)
+                    return date_parser.parse(date_str, fuzzy=False, dayfirst=True)
                 except Exception:
                     pass
 
-            # Fallback to datetime.strptime for common formats
+            # Fallback to datetime.strptime for common formats.
+            # Day-first formats are listed before month-first so ambiguous
+            # DD/MM vs MM/DD values resolve to the UK interpretation.
             formats = [
                 "%Y-%m-%d",              # 2024-11-25
-                "%m/%d/%Y",              # 11/25/2024
                 "%d/%m/%Y",              # 25/11/2024
+                "%m/%d/%Y",              # 11/25/2024
                 "%Y-%m-%d %H:%M:%S",     # 2024-11-25 10:30:00
-                "%m/%d/%Y %H:%M",        # 11/25/2024 10:30
                 "%d/%m/%Y %H:%M",        # 25/11/2024 10:30
+                "%m/%d/%Y %H:%M",        # 11/25/2024 10:30
             ]
 
             for fmt in formats:
@@ -619,7 +679,6 @@ def fetch_single_source(
                             if abf in fields and fields[abf]:
                                 domain_added_by[d] = str(fields[abf]).strip()
                                 break
-                            break
 
                 # Disavow lists: ALWAYS exclude, no age exception
                 if is_disavow_list:
@@ -1109,10 +1168,13 @@ for _ov in _unified_overflows:
 mandatory_db_sources      = [dict(src) for src in DATABASE_SOURCES]
 mandatory_disavow_sources = [dict(src) for src in DISAVOW_SOURCES]
 
+mandatory_deal_pipeline_sources = [dict(src) for src in DEAL_PIPELINE_SOURCES]
+
 mandatory_sources = (
     [unified_prospect_source]
     + unified_overflow_sources
     + LEGACY_PROSPECT_SOURCES
+    + mandatory_deal_pipeline_sources
     + mandatory_db_sources
     + mandatory_disavow_sources
 )
@@ -1134,6 +1196,11 @@ with st.expander("View all deduplication sources"):
     st.markdown("---")
     st.markdown("**Legacy Per-Brand Prospect Sources (read-only, historical dedup):**")
     for src in LEGACY_PROSPECT_SOURCES:
+        st.markdown(f"- `{src['label']}`")
+
+    st.markdown("---")
+    st.markdown("**Deal Pipeline Sources (Rule 1: active deals, always blocked while present):**")
+    for src in DEAL_PIPELINE_SOURCES:
         st.markdown(f"- `{src['label']}`")
 
     st.markdown("---")
@@ -1197,7 +1264,7 @@ with tab_quick:
     if check_clicked and domains_to_check:
         with st.spinner("Fetching Airtable data (uses cache — fast after first load)..."):
             try:
-                qc_existing, _, _, qc_d2s, qc_dates, qc_addedby, _ = fetch_existing_domains(
+                qc_existing, _, _, qc_d2s, qc_dates, qc_addedby, qc_source_errors = fetch_existing_domains(
                     active_sources,
                     show_progress=False,
                     exclude_old_domains=False,
@@ -1208,6 +1275,16 @@ with tab_quick:
             except Exception as e:
                 st.error(f"Error fetching data: {e}")
                 qc_existing, qc_d2s, qc_dates, qc_addedby = set(), {}, {}, {}
+                qc_source_errors = {src["label"]: "Fetch failed" for src in active_sources}
+
+        # A Prospect-Data or Disavow source that fails to load silently returns an
+        # empty set (fetch_single_source swallows the error), so domains from that
+        # source would wrongly look "safe". If any such critical source failed we
+        # cannot enforce Rule 1 / disavow safety — surface it and block the push.
+        qc_critical_errors = {
+            lbl: msg for lbl, msg in qc_source_errors.items()
+            if lbl in (ALL_PROSPECT_LABELS | ALL_DISAVOW_LABELS)
+        }
 
         if qc_d2s and qc_dates is not None:
             qc_blocked, qc_safe_3m, qc_safe_6m = apply_smart_dedup_rules(
@@ -1219,6 +1296,15 @@ with tab_quick:
 
         st.markdown("---")
         st.subheader(f"Results — {len(domains_to_check)} domain{'s' if len(domains_to_check) != 1 else ''} checked")
+
+        if qc_critical_errors:
+            st.error(
+                f"⚠️ **{len(qc_critical_errors)} Prospect-Data / Disavow source(s) failed to load:** "
+                + ", ".join(f"`{lbl}`" for lbl in qc_critical_errors)
+                + ".\n\nResults below may be unreliable and **nothing will be auto-pushed** — "
+                "without these sources the tool cannot enforce Rule 1 (no simultaneous outreach) "
+                "or the disavow list. Fix the Airtable token access and try again."
+            )
 
         for raw_input in domains_to_check:
             norm = normalize_domain(raw_input)
@@ -1248,7 +1334,13 @@ with tab_quick:
             if normalize_domain(d) and normalize_domain(d) not in qc_blocked
         ]
 
-        if safe_domains:
+        if safe_domains and qc_critical_errors:
+            # Guard: never write to Airtable when a critical dedup source is missing.
+            st.warning(
+                "Auto-push skipped because one or more Prospect-Data / Disavow sources "
+                "failed to load (see the error above)."
+            )
+        elif safe_domains:
             qc_pushed_key = f"qc_autopushed_{hash(frozenset(safe_domains))}"
             qc_result_key = f"{qc_pushed_key}_result"
 
