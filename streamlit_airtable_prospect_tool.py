@@ -1133,7 +1133,7 @@ def batch_cross_vertical_check(domains: list[str], exclude_label: str) -> set[st
 st.title("Prospect Filtering & Airtable Sync")
 
 st.subheader("User")
-user_type  = st.radio("You are:", ["Internal Team", "Agency"], horizontal=True, key="user_type")
+user_type  = st.radio("You are:", ["Internal Team", "Agency"], index=1, horizontal=True, key="user_type")
 is_agency  = user_type == "Agency"
 user_name  = st.text_input("Your name:")
 user_email = st.text_input("Your email:")
