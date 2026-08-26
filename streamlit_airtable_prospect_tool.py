@@ -273,8 +273,20 @@ UNIFIED_PROSPECT_TABLE_ID = "tbliCOQZY9RICLsLP"
 UNIFIED_PROSPECT_LABEL    = "Prospect-Data-GDC-Group"
 UNIFIED_WORKSPACE_ID      = "wsp0AMYMJnoJ3KDLB"
 
-# ---- Cooldown: single threshold for all live-link re-outreach ----
+# ---- Agency push target (separate Airtable base for external-agency prospects) ----
+AGENCY_PROSPECT_BASE_ID  = "appnThy3KRF3Iem1F"
+AGENCY_PROSPECT_TABLE_ID = "tbliCOQZY9RICLsLP"
+AGENCY_PROSPECT_LABEL    = "Prospect-Data-Agency"
+
+# ---- Cooldown: single threshold for all live-link re-outreach (internal team) ----
 COOLDOWN_MONTHS = 6
+
+# ---- Prospect-only reuse window (no live link involved) — applies to everyone ----
+PROSPECT_REUSE_DAYS = 30
+
+# ---- Agency mode: live links acquired on/after this date are blocked forever.
+# Links older than this are immediately fair game for agencies (no cooldown wait). ----
+AGENCY_LIVE_LINK_CUTOFF = datetime(2025, 1, 1)
 
 # ---- Legacy per-brand Prospect-Data bases (read-only during soft-start) ----
 # These are checked for deduplication so existing historical records still block
@@ -342,7 +354,8 @@ def discover_overflow_bases() -> dict[str, list[dict]]:
 # "verticals" list indicates which vertical(s) this database represents.
 DATABASE_SOURCES = [
     {"label": "AI-Outreach-GetViktor (Staging Live Links)", "base_id": "appvWrRHWFjG05Dbc", "table_id": "tbls2s6EQk4toHxel", "is_disavow": False, "is_database": True, "verticals": ["All brands"]},
-    {"label": "GDC-Database",        "base_id": "appUoOvkqzJvyyMvC", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": True, "verticals": ["GDC"]},
+    {"label": "AI-Outreach-GetViktor (External Links - Marketplace)", "base_id": "appvWrRHWFjG05Dbc", "table_id": "tblWA2KRVwcrwWSYX", "is_disavow": False, "is_database": True, "verticals": ["All brands"]},
+    {"label": "GDC-Database",       "base_id": "appUoOvkqzJvyyMvC", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": True, "verticals": ["GDC"]},
     {"label": "WB-Database",         "base_id": "appueIgn44RaVH6ot", "table_id": "tbl3vMYv4RzKfuBf4", "is_disavow": False, "is_database": True, "verticals": ["WhichBingo"]},
     {"label": "Freebets-Database",   "base_id": "appFBasaCUkEKtvpV", "table_id": "tblmTREzfIswOuA0F", "is_disavow": False, "is_database": True, "verticals": ["Freebets"]},
     {"label": "BonusFinder-Database", "base_id": "appZEyAoVubSrBl9w", "table_id": "tbl4pzZFkzfKLhtkK", "is_disavow": False, "is_database": True, "verticals": ["BonusFinder"]},
@@ -373,6 +386,8 @@ for _lsrc in LEGACY_PROSPECT_SOURCES:
     ALL_PROSPECT_LABELS.add(_lsrc["label"])
 for _dsrc in DEAL_PIPELINE_SOURCES:
     ALL_PROSPECT_LABELS.add(_dsrc["label"])
+if AGENCY_PROSPECT_BASE_ID and AGENCY_PROSPECT_TABLE_ID:
+    ALL_PROSPECT_LABELS.add(AGENCY_PROSPECT_LABEL)
 
 # ---- Build a set of ALL database labels ----
 ALL_DATABASE_LABELS: set[str] = {src["label"] for src in DATABASE_SOURCES}
@@ -390,6 +405,8 @@ for _lsrc in LEGACY_PROSPECT_SOURCES:
 for _dsrc in DEAL_PIPELINE_SOURCES:
     if _dsrc["label"] not in ALL_PROSPECT_TABLES:
         ALL_PROSPECT_TABLES[_dsrc["label"]] = api.base(_dsrc["base_id"]).table(_dsrc["table_id"])
+if AGENCY_PROSPECT_BASE_ID and AGENCY_PROSPECT_TABLE_ID and AGENCY_PROSPECT_LABEL not in ALL_PROSPECT_TABLES:
+    ALL_PROSPECT_TABLES[AGENCY_PROSPECT_LABEL] = api.base(AGENCY_PROSPECT_BASE_ID).table(AGENCY_PROSPECT_TABLE_ID)
 
 # ---- Register any auto-created overflow bases for the unified target ----
 _overflow_map: dict[str, list[dict]] = discover_overflow_bases()
@@ -788,23 +805,27 @@ def apply_smart_dedup_rules(
     all_domains: set[str],
     domain_to_sources: dict[str, set[str]],
     domain_dates_by_source: dict[str, dict[str, datetime]],
+    is_agency: bool = False,
 ) -> tuple[set[str], set[str], set[str]]:
-    """Apply the 3 business rules to determine which domains to block/allow.
+    """Apply the business rules to determine which domains to block/allow.
 
     Rules (all brands are now one team — no same/different vertical distinction):
         1. No simultaneous outreach - domains in ANY Prospect-Data source are blocked
-        2. Live link (Database) sites safe after COOLDOWN_MONTHS (6 months) for any brand
-        3. Prospect-only domains (no live link) safe after 45 days
+        2. Live link (Database) sites:
+           - Internal team: safe after COOLDOWN_MONTHS (6 months) for any brand
+           - Agency (is_agency=True): safe ONLY if the link predates
+             AGENCY_LIVE_LINK_CUTOFF; links from that date onward are blocked forever
+        3. Prospect-only domains (no live link) safe after PROSPECT_REUSE_DAYS days
 
     Returns:
         tuple: (
             final_blocked: domains that should remain blocked,
-            safe_prospect_45d: domains safe due to 45-day no-result rule (Rule 3),
-            safe_db_6m: domains safe due to 6-month live-link cooldown (Rule 2),
+            safe_prospect_45d: domains safe due to the no-result reuse rule (Rule 3),
+            safe_db_6m: domains safe due to the live-link rule (Rule 2),
         )
     """
     now = datetime.now()
-    threshold_45d = now - timedelta(days=45)
+    threshold_45d = now - timedelta(days=PROSPECT_REUSE_DAYS)
     threshold_6m  = now - timedelta(days=COOLDOWN_MONTHS * 30)
 
     safe_prospect_45d: set[str] = set()
@@ -868,8 +889,15 @@ def apply_smart_dedup_rules(
             if most_recent_db_date is None:
                 continue  # No date — cannot verify age, keep blocked
 
-            if most_recent_db_date < threshold_6m:
-                safe_db_6m.add(domain)
+            if is_agency:
+                # Agency cutoff: links acquired on/after AGENCY_LIVE_LINK_CUTOFF are
+                # blocked forever (no expiry). Links from before that date are
+                # immediately safe — no cooldown wait.
+                if most_recent_db_date < AGENCY_LIVE_LINK_CUTOFF:
+                    safe_db_6m.add(domain)
+            else:
+                if most_recent_db_date < threshold_6m:
+                    safe_db_6m.add(domain)
 
     all_safe = safe_prospect_45d | safe_db_6m
     final_blocked = all_domains - all_safe
@@ -1105,8 +1133,13 @@ def batch_cross_vertical_check(domains: list[str], exclude_label: str) -> set[st
 st.title("Prospect Filtering & Airtable Sync")
 
 st.subheader("User")
+user_type  = st.radio("You are:", ["Internal Team", "Agency"], horizontal=True, key="user_type")
+is_agency  = user_type == "Agency"
 user_name  = st.text_input("Your name:")
 user_email = st.text_input("Your email:")
+agency_name = ""
+if is_agency:
+    agency_name = st.text_input("Agency name:").strip()
 
 # Basic email validation
 def is_valid_email(email: str) -> bool:
@@ -1128,19 +1161,43 @@ if not is_valid_email(user_email):
     st.error("Please provide a valid email address.")
     st.stop()
 
+if is_agency and not agency_name:
+    st.warning("Please provide the agency name to continue.")
+    st.stop()
+
+if is_agency:
+    st.info(
+        f"**Agency mode active.** Any domain with a confirmed live link acquired on or after "
+        f"**{AGENCY_LIVE_LINK_CUTOFF.strftime('%d %b %Y')}** is blocked forever — no cooldown "
+        f"exception. Live links from before that date are immediately available (no wait)."
+    )
+
 # No brand selection needed — outreach is brand-agnostic, brand assigned later in Airtable
 
-# ---- Push target: always the unified base (or its latest overflow) ----
-PUSH_BASE_ID  = UNIFIED_PROSPECT_BASE_ID
-PUSH_TABLE_ID = UNIFIED_PROSPECT_TABLE_ID
-push_target_label = UNIFIED_PROSPECT_LABEL
+# ---- Push target: unified base (internal team) or agency-specific base ----
+if is_agency:
+    if not AGENCY_PROSPECT_BASE_ID or not AGENCY_PROSPECT_TABLE_ID:
+        st.error(
+            "Agency push target isn't configured yet. Add `AGENCY_PROSPECT_BASE_ID` / "
+            "`AGENCY_PROSPECT_TABLE_ID` near the top of this file once the new Airtable "
+            "base for agency prospects has been created."
+        )
+        st.stop()
+    PUSH_BASE_ID       = AGENCY_PROSPECT_BASE_ID
+    PUSH_TABLE_ID      = AGENCY_PROSPECT_TABLE_ID
+    push_target_label  = AGENCY_PROSPECT_LABEL
+    _unified_overflows = []
+else:
+    PUSH_BASE_ID  = UNIFIED_PROSPECT_BASE_ID
+    PUSH_TABLE_ID = UNIFIED_PROSPECT_TABLE_ID
+    push_target_label = UNIFIED_PROSPECT_LABEL
 
-_unified_overflows = _overflow_map.get(UNIFIED_PROSPECT_LABEL, [])
-if _unified_overflows:
-    _latest = _unified_overflows[-1]
-    PUSH_BASE_ID      = _latest["base_id"]
-    PUSH_TABLE_ID     = _latest["table_id"]
-    push_target_label = _latest["label"]
+    _unified_overflows = _overflow_map.get(UNIFIED_PROSPECT_LABEL, [])
+    if _unified_overflows:
+        _latest = _unified_overflows[-1]
+        PUSH_BASE_ID      = _latest["base_id"]
+        PUSH_TABLE_ID     = _latest["table_id"]
+        push_target_label = _latest["label"]
 
 push_table = api.base(PUSH_BASE_ID).table(PUSH_TABLE_ID)
 
@@ -1170,10 +1227,21 @@ mandatory_disavow_sources = [dict(src) for src in DISAVOW_SOURCES]
 
 mandatory_deal_pipeline_sources = [dict(src) for src in DEAL_PIPELINE_SOURCES]
 
+agency_prospect_sources = []
+if AGENCY_PROSPECT_BASE_ID and AGENCY_PROSPECT_TABLE_ID:
+    agency_prospect_sources = [{
+        "label": AGENCY_PROSPECT_LABEL,
+        "base_id": AGENCY_PROSPECT_BASE_ID,
+        "table_id": AGENCY_PROSPECT_TABLE_ID,
+        "is_disavow": False,
+        "is_database": False,
+    }]
+
 mandatory_sources = (
     [unified_prospect_source]
     + unified_overflow_sources
     + LEGACY_PROSPECT_SOURCES
+    + agency_prospect_sources
     + mandatory_deal_pipeline_sources
     + mandatory_db_sources
     + mandatory_disavow_sources
@@ -1188,7 +1256,7 @@ st.caption(
 st.write("**Deduplication Sources (all mandatory):**")
 
 with st.expander("View all deduplication sources"):
-    st.markdown(f"**Push Target (Unified):** `{UNIFIED_PROSPECT_LABEL}`")
+    st.markdown(f"**Push Target:** `{push_target_label}`")
     if unified_overflow_sources:
         for _ov_src in unified_overflow_sources:
             st.markdown(f"- Overflow: `{_ov_src['label']}`")
@@ -1199,12 +1267,22 @@ with st.expander("View all deduplication sources"):
         st.markdown(f"- `{src['label']}`")
 
     st.markdown("---")
+    st.markdown("**Agency Prospect Source (checked for Rule 1, regardless of user type):**")
+    if agency_prospect_sources:
+        st.markdown(f"- `{AGENCY_PROSPECT_LABEL}`")
+    else:
+        st.markdown("- _Not yet configured — add `AGENCY_PROSPECT_BASE_ID` / `AGENCY_PROSPECT_TABLE_ID` once created._")
+
+    st.markdown("---")
     st.markdown("**Deal Pipeline Sources (Rule 1: active deals, always blocked while present):**")
     for src in DEAL_PIPELINE_SOURCES:
         st.markdown(f"- `{src['label']}`")
 
     st.markdown("---")
-    st.markdown(f"**Database / Live Link Sources (Rule 2: {COOLDOWN_MONTHS}-month cooldown):**")
+    if is_agency:
+        st.markdown(f"**Database / Live Link Sources (Rule 2: blocked forever if on/after {AGENCY_LIVE_LINK_CUTOFF.strftime('%d %b %Y')}):**")
+    else:
+        st.markdown(f"**Database / Live Link Sources (Rule 2: {COOLDOWN_MONTHS}-month cooldown):**")
     for src in mandatory_db_sources:
         brands_str = ", ".join(src.get("verticals", []))
         st.markdown(f"- `{src['label']}` ({brands_str})")
@@ -1288,7 +1366,7 @@ with tab_quick:
 
         if qc_d2s and qc_dates is not None:
             qc_blocked, qc_safe_3m, qc_safe_6m = apply_smart_dedup_rules(
-                qc_existing, qc_d2s, qc_dates,
+                qc_existing, qc_d2s, qc_dates, is_agency=is_agency,
             )
         else:
             qc_blocked = qc_existing
@@ -1320,9 +1398,12 @@ with tab_quick:
                 st.dataframe(df_detail, use_container_width=True, hide_index=True)
             else:
                 if norm in qc_safe_6m:
-                    reason = f"Rule 2: live link {COOLDOWN_MONTHS}+ months ago — safe to re-outreach"
+                    if is_agency:
+                        reason = f"Rule 2 (Agency): live link confirmed before {AGENCY_LIVE_LINK_CUTOFF.strftime('%d %b %Y')} — safe to re-outreach"
+                    else:
+                        reason = f"Rule 2: live link {COOLDOWN_MONTHS}+ months ago — safe to re-outreach"
                 elif norm in qc_safe_3m:
-                    reason = "Rule 3: prospected 45+ days ago, no live link — safe to re-outreach"
+                    reason = f"Rule 3: prospected {PROSPECT_REUSE_DAYS}+ days ago, no live link — safe to re-outreach"
                 else:
                     reason = "Brand new — not found in any source"
                 st.success(f"✅ **{norm}** — Safe to outreach")
@@ -1374,7 +1455,8 @@ with tab_quick:
                             qc_to_create.append(d)
 
                     date_str = datetime.now().strftime("%Y-%m-%d")
-                    common_fields = {"Date": date_str, "Added By Name": user_name, "Added By Email": user_email}
+                    added_by_display = f"{user_name} ({agency_name})" if is_agency and agency_name else user_name
+                    common_fields = {"Date": date_str, "Added By Name": added_by_display, "Added By Email": user_email}
                     BATCH_SIZE = 10
                     qc_created = qc_updated = qc_errors = 0
                     qc_error_details = []
@@ -1498,12 +1580,23 @@ with tab_full:
 
             # ---------- Display rules ----------
             st.subheader("Active Rules")
-            st.markdown(f"""
+            if is_agency:
+                st.markdown(f"""
+| Rule | Description | Threshold |
+|------|-------------|-----------|
+| **Rule 1** | No one outreaches the same domain while it's active in any brand's Prospect-Data | All sources checked (mandatory) |
+| **Rule 2 (Agency)** | Live link confirmed **on/after {AGENCY_LIVE_LINK_CUTOFF.strftime('%d %b %Y')}** | Blocked forever — no expiry |
+| **Rule 2 (Agency)** | Live link confirmed **before {AGENCY_LIVE_LINK_CUTOFF.strftime('%d %b %Y')}** | Immediately fair game — no wait |
+| **Rule 3** | Prospect-only domain (no live link) safe for anyone | **{PROSPECT_REUSE_DAYS} days** after outreach with no live link |
+| **Disavow** | Rejected/disavowed sites never reusable | Always blocked |
+""")
+            else:
+                st.markdown(f"""
 | Rule | Description | Threshold |
 |------|-------------|-----------|
 | **Rule 1** | No one outreaches the same domain while it's active in any brand's Prospect-Data | All sources checked (mandatory) |
 | **Rule 2** | Domain with a confirmed live link can be re-outreached by any brand | **{COOLDOWN_MONTHS} months** after link confirmed |
-| **Rule 3** | Prospect-only domain (no live link) safe for anyone | **45 days** after outreach with no live link |
+| **Rule 3** | Prospect-only domain (no live link) safe for anyone | **{PROSPECT_REUSE_DAYS} days** after outreach with no live link |
 | **Disavow** | Rejected/disavowed sites never reusable | Always blocked |
 """)
 
@@ -1559,6 +1652,7 @@ with tab_full:
                     existing,
                     domain_to_sources,
                     domain_dates_by_source,
+                    is_agency=is_agency,
                 )
             else:
                 blocked_domains = existing
@@ -1578,9 +1672,15 @@ with tab_full:
 
             col1, col2 = st.columns(2)
             with col1:
-                st.metric(f"Rule 2: Live link {COOLDOWN_MONTHS}m+", f"{total_safe_6m:,}", help=f"Live link sites older than {COOLDOWN_MONTHS} months — safe to re-outreach for any brand")
+                if is_agency:
+                    st.metric(
+                        "Rule 2 (Agency): pre-cutoff live links", f"{total_safe_6m:,}",
+                        help=f"Live links confirmed before {AGENCY_LIVE_LINK_CUTOFF.strftime('%d %b %Y')} — safe for agencies. Links from that date onward are blocked forever.",
+                    )
+                else:
+                    st.metric(f"Rule 2: Live link {COOLDOWN_MONTHS}m+", f"{total_safe_6m:,}", help=f"Live link sites older than {COOLDOWN_MONTHS} months — safe to re-outreach for any brand")
             with col2:
-                st.metric("Rule 3: No-result 45d+", f"{total_safe_45d:,}", help="Prospect-only domains older than 45 days with no live link")
+                st.metric(f"Rule 3: No-result {PROSPECT_REUSE_DAYS}d+", f"{total_safe_45d:,}", help=f"Prospect-only domains older than {PROSPECT_REUSE_DAYS} days with no live link")
 
             # Detailed breakdown
             with st.expander("View detailed breakdown by source"):
@@ -1665,9 +1765,12 @@ with tab_full:
                 st.markdown("**Safe-to-outreach breakdown:**")
                 st.write(f"- **{len(completely_new):,}** completely new domains")
                 if reoutreach_45d_in_list:
-                    st.write(f"- **{len(reoutreach_45d_in_list):,}** re-outreach candidates (Rule 3: no live link after 45+ days)")
+                    st.write(f"- **{len(reoutreach_45d_in_list):,}** re-outreach candidates (Rule 3: no live link after {PROSPECT_REUSE_DAYS}+ days)")
                 if reoutreach_6m_in_list:
-                    st.write(f"- **{len(reoutreach_6m_in_list):,}** re-outreach available (Rule 2: live link {COOLDOWN_MONTHS}+ months ago)")
+                    if is_agency:
+                        st.write(f"- **{len(reoutreach_6m_in_list):,}** re-outreach available (Rule 2 (Agency): live link confirmed before {AGENCY_LIVE_LINK_CUTOFF.strftime('%d %b %Y')})")
+                    else:
+                        st.write(f"- **{len(reoutreach_6m_in_list):,}** re-outreach available (Rule 2: live link {COOLDOWN_MONTHS}+ months ago)")
 
             # ---------- Two-sheet display: tabs ----------
             tab_safe, tab_blocked = st.tabs([
@@ -1790,6 +1893,7 @@ with tab_full:
                                 latest_existing,
                                 latest_domain_to_sources,
                                 latest_domain_dates_by_source,
+                                is_agency=is_agency,
                             )
                         else:
                             latest_blocked = latest_existing
@@ -1855,7 +1959,8 @@ with tab_full:
                             else:
                                 to_create.append(d)
 
-                        common_fields = {"Date": date_str, "Added By Name": user_name, "Added By Email": user_email}
+                        added_by_display = f"{user_name} ({agency_name})" if is_agency and agency_name else user_name
+                        common_fields = {"Date": date_str, "Added By Name": added_by_display, "Added By Email": user_email}
                         total = len(to_create) + len(to_update)
 
                         # Batch create (Airtable limit: 10 per request)
