@@ -484,6 +484,8 @@ def read_uploaded_table(uploaded_file) -> pd.DataFrame:
             st.error(f"Missing dependency while reading your file: {e}")
         st.stop()
 
+_ISO_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
 def parse_date(date_str: str) -> datetime | None:
     """Parse date string from Airtable (handles various formats)."""
     if not date_str:
@@ -492,11 +494,24 @@ def parse_date(date_str: str) -> datetime | None:
         if isinstance(date_str, str):
             date_str = date_str.strip()
 
+            # Airtable's API always returns Date fields as ISO 8601 (YYYY-MM-DD...),
+            # regardless of how the field is displayed in the UI. Parse these directly
+            # in fixed Y-M-D order FIRST — dateutil's dayfirst=True (below) will silently
+            # swap day/month on an unambiguous ISO string whenever both remaining
+            # components are <=12 (e.g. "2026-03-11" -> misparsed as 3 Nov instead of
+            # 11 Mar), which can flip a domain across the 30-day / 6-month / agency
+            # cutoff thresholds.
+            iso_match = _ISO_DATE_PREFIX_RE.match(date_str)
+            if iso_match:
+                try:
+                    return datetime.strptime(iso_match.group(0), "%Y-%m-%d")
+                except ValueError:
+                    pass
+
             # Try dateutil parser first if available (handles most formats).
-            # dayfirst=True: brands are UK-facing and Airtable dates are shown/
-            # entered DD/MM/YYYY, so an ambiguous value like 05/11/2024 must be
-            # read as 5 Nov, not 11 May — a wrong reading can flip a domain
-            # across the 45-day / 6-month cooldown thresholds.
+            # dayfirst=True: brands are UK-facing, so a genuinely ambiguous
+            # non-ISO value like 05/11/2024 (e.g. manually typed) must be
+            # read as 5 Nov, not 11 May.
             if HAS_DATEUTIL:
                 try:
                     return date_parser.parse(date_str, fuzzy=False, dayfirst=True)
