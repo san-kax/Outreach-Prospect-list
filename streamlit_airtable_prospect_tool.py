@@ -231,6 +231,68 @@ def create_overflow_base(current_label: str, current_base_id: str, current_table
         return None, None, None, err
 
 
+def resolve_next_overflow_target(
+    current_label: str,
+    current_base_id: str,
+    current_table_id: str,
+    is_agency_push: bool,
+    config_workspace_id: str | None = None,
+):
+    """Return (base_id, table_id, label, error) for wherever writes should go once
+    `current_label`'s table hits Airtable's row limit.
+
+    Agency pushes walk the pre-created AGENCY_PROSPECT_OVERFLOW_CHAIN first — no base
+    creation needed, just point at the next known base. Once that chain is exhausted
+    (or for the internal/unified target, which has no pre-created chain), fall back to
+    auto-creating a new base via create_overflow_base.
+    """
+    if is_agency_push:
+        full_chain = (
+            [{"label": AGENCY_PROSPECT_LABEL, "base_id": AGENCY_PROSPECT_BASE_ID, "table_id": AGENCY_PROSPECT_TABLE_ID}]
+            + AGENCY_PROSPECT_OVERFLOW_CHAIN
+        )
+        chain_labels = [c["label"] for c in full_chain]
+        if current_label in chain_labels:
+            idx = chain_labels.index(current_label)
+            if idx + 1 < len(full_chain):
+                nxt = full_chain[idx + 1]
+                return nxt["base_id"], nxt["table_id"], nxt["label"], None
+    return create_overflow_base(current_label, current_base_id, current_table_id, config_workspace_id=config_workspace_id)
+
+
+def push_batch_with_failover(
+    records_payload: list[dict],
+    base_id: str,
+    table_id: str,
+    label: str,
+    is_agency_push: bool,
+    config_workspace_id: str | None,
+    max_hops: int = 6,
+) -> tuple[bool, str, str, str, str | None]:
+    """Batch-create records_payload against (base_id, table_id).
+
+    On Airtable's row-limit error, resolve the next overflow target (pre-created
+    agency chain entry, or a freshly auto-created base) and retry the same payload —
+    repeating up to max_hops times so a run can walk through several full bases in a
+    row if needed. Returns (success, final_base_id, final_table_id, final_label, error).
+    """
+    for _ in range(max_hops):
+        try:
+            api.base(base_id).table(table_id).batch_create(records_payload)
+            return True, base_id, table_id, label, None
+        except Exception as e:
+            if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" not in str(e):
+                return False, base_id, table_id, label, str(e)
+            nxt_base_id, nxt_table_id, nxt_label, nxt_err = resolve_next_overflow_target(
+                label, base_id, table_id, is_agency_push, config_workspace_id
+            )
+            if not nxt_base_id:
+                return False, base_id, table_id, label, f"table full and no overflow available — {nxt_err}"
+            base_id, table_id, label = nxt_base_id, nxt_table_id, nxt_label
+            discover_overflow_bases.clear()
+    return False, base_id, table_id, label, "exceeded max overflow hops"
+
+
 # Helper function to test base access with detailed diagnostics
 def test_base_access(base_id: str, table_id: str) -> tuple[bool, str]:
     """Test if we can access a specific base/table. Returns (success, message)."""
@@ -274,9 +336,22 @@ UNIFIED_PROSPECT_LABEL    = "Prospect-Data-GDC-Group"
 UNIFIED_WORKSPACE_ID      = "wsp0AMYMJnoJ3KDLB"
 
 # ---- Agency push target (separate Airtable base for external-agency prospects) ----
-AGENCY_PROSPECT_BASE_ID  = "appnThy3KRF3Iem1F"
+# 2026-09-16: original "Prospect-Data-Agency" base (appnThy3KRF3Iem1F) hit Airtable's
+# 50,000-row limit. New leads now go to a manually-created overflow base; the old base
+# is kept in LEGACY_AGENCY_PROSPECT_SOURCES below so it's still checked for dedup.
+AGENCY_PROSPECT_BASE_ID  = "appXoFMt6s7yCJS2b"
 AGENCY_PROSPECT_TABLE_ID = "tbliCOQZY9RICLsLP"
-AGENCY_PROSPECT_LABEL    = "Prospect-Data-Agency"
+AGENCY_PROSPECT_LABEL    = "Prospect-Data-Agency-2"
+
+# ---- Agency overflow chain: pre-created bases used once AGENCY_PROSPECT_BASE_ID fills.
+# Pushes go to AGENCY_PROSPECT_BASE_ID first; when Airtable rejects a write because that
+# table hit its row limit, the app automatically rolls forward through this list in
+# order (no code change needed) before falling back to auto-creating a brand-new base.
+# Add another entry here ahead of time whenever a further one is pre-created.
+AGENCY_PROSPECT_OVERFLOW_CHAIN = [
+    {"label": "Prospect-Data-Agency-3", "base_id": "app1ylb9TynzhvHc6", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+    {"label": "Prospect-Data-Agency-4", "base_id": "appZAQnwS0eE1MafG", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+]
 
 # ---- Cooldown: single threshold for all live-link re-outreach (internal team) ----
 COOLDOWN_MONTHS = 6
@@ -301,6 +376,13 @@ LEGACY_PROSPECT_SOURCES = [
     {"label": "Prospect-Data-Casinos",       "base_id": "appO5ta4j5rUaG9XL", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
     {"label": "Prospect-Data-Rotowire",      "base_id": "appwEdvjcFpq4qiHj", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
     {"label": "Prospect-Data-States-Sites",  "base_id": "appzVpYiLO90EgRgj", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
+]
+
+# ---- Legacy Agency Prospect-Data base (read-only — hit the 50k row limit) ----
+# Kept for dedup only; no new records are pushed here — all agency pushes go to
+# AGENCY_PROSPECT_BASE_ID above.
+LEGACY_AGENCY_PROSPECT_SOURCES = [
+    {"label": "Prospect-Data-Agency", "base_id": "appnThy3KRF3Iem1F", "table_id": "tbliCOQZY9RICLsLP", "is_disavow": False, "is_database": False},
 ]
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -388,6 +470,10 @@ for _dsrc in DEAL_PIPELINE_SOURCES:
     ALL_PROSPECT_LABELS.add(_dsrc["label"])
 if AGENCY_PROSPECT_BASE_ID and AGENCY_PROSPECT_TABLE_ID:
     ALL_PROSPECT_LABELS.add(AGENCY_PROSPECT_LABEL)
+for _asrc in LEGACY_AGENCY_PROSPECT_SOURCES:
+    ALL_PROSPECT_LABELS.add(_asrc["label"])
+for _asrc in AGENCY_PROSPECT_OVERFLOW_CHAIN:
+    ALL_PROSPECT_LABELS.add(_asrc["label"])
 
 # ---- Build a set of ALL database labels ----
 ALL_DATABASE_LABELS: set[str] = {src["label"] for src in DATABASE_SOURCES}
@@ -407,6 +493,12 @@ for _dsrc in DEAL_PIPELINE_SOURCES:
         ALL_PROSPECT_TABLES[_dsrc["label"]] = api.base(_dsrc["base_id"]).table(_dsrc["table_id"])
 if AGENCY_PROSPECT_BASE_ID and AGENCY_PROSPECT_TABLE_ID and AGENCY_PROSPECT_LABEL not in ALL_PROSPECT_TABLES:
     ALL_PROSPECT_TABLES[AGENCY_PROSPECT_LABEL] = api.base(AGENCY_PROSPECT_BASE_ID).table(AGENCY_PROSPECT_TABLE_ID)
+for _asrc in LEGACY_AGENCY_PROSPECT_SOURCES:
+    if _asrc["label"] not in ALL_PROSPECT_TABLES:
+        ALL_PROSPECT_TABLES[_asrc["label"]] = api.base(_asrc["base_id"]).table(_asrc["table_id"])
+for _asrc in AGENCY_PROSPECT_OVERFLOW_CHAIN:
+    if _asrc["label"] not in ALL_PROSPECT_TABLES:
+        ALL_PROSPECT_TABLES[_asrc["label"]] = api.base(_asrc["base_id"]).table(_asrc["table_id"])
 
 # ---- Register any auto-created overflow bases for the unified target ----
 _overflow_map: dict[str, list[dict]] = discover_overflow_bases()
@@ -1251,6 +1343,8 @@ if AGENCY_PROSPECT_BASE_ID and AGENCY_PROSPECT_TABLE_ID:
         "is_disavow": False,
         "is_database": False,
     }]
+agency_prospect_sources += [dict(src) for src in LEGACY_AGENCY_PROSPECT_SOURCES]
+agency_prospect_sources += [dict(src) for src in AGENCY_PROSPECT_OVERFLOW_CHAIN]
 
 mandatory_sources = (
     [unified_prospect_source]
@@ -1282,9 +1376,17 @@ with st.expander("View all deduplication sources"):
         st.markdown(f"- `{src['label']}`")
 
     st.markdown("---")
-    st.markdown("**Agency Prospect Source (checked for Rule 1, regardless of user type):**")
+    st.markdown("**Agency Prospect Sources (checked for Rule 1, regardless of user type):**")
     if agency_prospect_sources:
-        st.markdown(f"- `{AGENCY_PROSPECT_LABEL}`")
+        _legacy_agency_labels = {s["label"] for s in LEGACY_AGENCY_PROSPECT_SOURCES}
+        for _asrc in agency_prospect_sources:
+            if _asrc["label"] == AGENCY_PROSPECT_LABEL:
+                _tag = " (push target)"
+            elif _asrc["label"] in _legacy_agency_labels:
+                _tag = " (legacy, read-only — full)"
+            else:
+                _tag = " (overflow — used automatically once the push target is full)"
+            st.markdown(f"- `{_asrc['label']}`{_tag}")
     else:
         st.markdown("- _Not yet configured — add `AGENCY_PROSPECT_BASE_ID` / `AGENCY_PROSPECT_TABLE_ID` once created._")
 
@@ -1475,53 +1577,23 @@ with tab_quick:
                     BATCH_SIZE = 10
                     qc_created = qc_updated = qc_errors = 0
                     qc_error_details = []
-                    qc_overflow_info = None
+                    qc_current_base_id, qc_current_table_id, qc_current_label = PUSH_BASE_ID, PUSH_TABLE_ID, push_target_label
                     qc_overflow_created = 0
 
                     for batch in [qc_to_create[i:i+BATCH_SIZE] for i in range(0, len(qc_to_create), BATCH_SIZE)]:
                         records_payload = [{"Domain": d, **common_fields} for d in batch]
-
-                        # Route straight to overflow if already created
-                        if qc_overflow_info:
-                            _, _, _, ov_ref = qc_overflow_info
-                            try:
-                                ov_ref.batch_create(records_payload)
-                                qc_overflow_created += len(batch)
-                                qc_created += len(batch)
-                            except Exception as e:
-                                qc_errors += len(batch)
-                                for d in batch:
-                                    qc_error_details.append(f"{d} (overflow): {str(e)}")
-                            continue
-
-                        # Try primary base
-                        try:
-                            push_table.batch_create(records_payload)
+                        ok, qc_current_base_id, qc_current_table_id, qc_current_label, err = push_batch_with_failover(
+                            records_payload, qc_current_base_id, qc_current_table_id, qc_current_label,
+                            is_agency_push=is_agency, config_workspace_id=UNIFIED_WORKSPACE_ID,
+                        )
+                        if ok:
                             qc_created += len(batch)
-                        except Exception as e:
-                            if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
-                                # Primary full — create overflow NOW and retry this same batch
-                                ob_id, ot_id, ol, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID, config_workspace_id=UNIFIED_WORKSPACE_ID)
-                                if ob_id:
-                                    ov_ref = api.base(ob_id).table(ot_id)
-                                    qc_overflow_info = (ob_id, ot_id, ol, ov_ref)
-                                    discover_overflow_bases.clear()
-                                    try:
-                                        ov_ref.batch_create(records_payload)
-                                        qc_overflow_created += len(batch)
-                                        qc_created += len(batch)
-                                    except Exception as ov_e:
-                                        qc_errors += len(batch)
-                                        for d in batch:
-                                            qc_error_details.append(f"{d} (overflow): {str(ov_e)}")
-                                else:
-                                    qc_errors += len(batch)
-                                    for d in batch:
-                                        qc_error_details.append(f"{d}: overflow base creation failed — {ov_err}")
-                            else:
-                                qc_errors += len(batch)
-                                for d in batch:
-                                    qc_error_details.append(f"{d}: {str(e)}")
+                            if qc_current_label != push_target_label:
+                                qc_overflow_created += len(batch)
+                        else:
+                            qc_errors += len(batch)
+                            for d in batch:
+                                qc_error_details.append(f"{d}: {err}")
 
                     for batch in [qc_to_update[i:i+BATCH_SIZE] for i in range(0, len(qc_to_update), BATCH_SIZE)]:
                         try:
@@ -1551,12 +1623,11 @@ with tab_quick:
                     st.session_state[qc_pushed_key] = True
                     st.session_state[qc_result_key] = qc_result_msg
 
-                    if qc_overflow_info:
-                        _, _, ol, _ = qc_overflow_info
+                    if qc_current_label != push_target_label:
                         st.info(
-                            f"**Overflow base auto-created: `{ol}`**  \n"
+                            f"**Overflow base in use: `{qc_current_label}`**  \n"
                             f"{qc_overflow_created} domain(s) pushed there because `{push_target_label}` was full.  \n"
-                            f"It will be automatically included in duplicate checks from the next session onwards."
+                            f"It's checked for duplicates automatically."
                         )
                     if qc_errors and qc_error_details:
                         with st.expander("View push error details"):
@@ -1980,58 +2051,24 @@ with tab_full:
 
                         # Batch create (Airtable limit: 10 per request)
                         BATCH_SIZE = 10
-                        overflow_info = None        # (base_id, table_id, label, table_ref) once created
+                        current_base_id, current_table_id, current_label = PUSH_BASE_ID, PUSH_TABLE_ID, push_target_label
                         overflow_created = 0
                         create_batches = [to_create[i:i+BATCH_SIZE] for i in range(0, len(to_create), BATCH_SIZE)]
                         for batch in create_batches:
                             records_payload = [{"Domain": d, **common_fields} for d in batch]
-
-                            # Route straight to overflow if already created
-                            if overflow_info:
-                                _, _, _, ov_table_ref = overflow_info
-                                try:
-                                    ov_table_ref.batch_create(records_payload)
-                                    overflow_created += len(batch)
-                                    created += len(batch)
-                                except Exception as e:
-                                    errors += len(batch)
-                                    for d in batch:
-                                        error_details.append(f"{d} (overflow): {str(e)}")
-                                    logging.error(f"Error writing to overflow base: {e}")
-                                if total > 0:
-                                    progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
-                                continue
-
-                            # Try primary base
-                            try:
-                                push_table.batch_create(records_payload)
+                            ok, current_base_id, current_table_id, current_label, err = push_batch_with_failover(
+                                records_payload, current_base_id, current_table_id, current_label,
+                                is_agency_push=is_agency, config_workspace_id=UNIFIED_WORKSPACE_ID,
+                            )
+                            if ok:
                                 created += len(batch)
-                            except Exception as e:
-                                if "LIMIT_CHECK_TOO_MANY_RECORDS_IN_TABLE" in str(e):
-                                    # Primary full — create overflow NOW and retry this same batch
-                                    with st.spinner("Primary table full — creating overflow base…"):
-                                        ov_base_id, ov_table_id, ov_label, ov_err = create_overflow_base(push_target_label, PUSH_BASE_ID, PUSH_TABLE_ID, config_workspace_id=UNIFIED_WORKSPACE_ID)
-                                    if ov_base_id:
-                                        ov_table_ref = api.base(ov_base_id).table(ov_table_id)
-                                        overflow_info = (ov_base_id, ov_table_id, ov_label, ov_table_ref)
-                                        discover_overflow_bases.clear()
-                                        try:
-                                            ov_table_ref.batch_create(records_payload)
-                                            overflow_created += len(batch)
-                                            created += len(batch)
-                                        except Exception as ov_e:
-                                            errors += len(batch)
-                                            for d in batch:
-                                                error_details.append(f"{d} (overflow): {str(ov_e)}")
-                                    else:
-                                        errors += len(batch)
-                                        for d in batch:
-                                            error_details.append(f"{d}: overflow base creation failed — {ov_err}")
-                                else:
-                                    errors += len(batch)
-                                    for d in batch:
-                                        error_details.append(f"{d}: {str(e)}")
-                                    logging.error(f"Error batch-creating records: {e}")
+                                if current_label != push_target_label:
+                                    overflow_created += len(batch)
+                            else:
+                                errors += len(batch)
+                                for d in batch:
+                                    error_details.append(f"{d}: {err}")
+                                logging.error(f"Error batch-creating records for {current_label}: {err}")
                             if total > 0:
                                 progress_bar.progress(min((created + updated + skipped + errors) / (total + skipped), 1.0))
 
@@ -2073,13 +2110,12 @@ with tab_full:
                         st.session_state[pushed_key] = True
                         st.session_state[pushed_result_key] = result_msg
 
-                        # Show overflow base notice if one was created
-                        if overflow_info:
-                            ov_base_id, ov_table_id, ov_label, _ = overflow_info
+                        # Show overflow base notice if one was used
+                        if current_label != push_target_label:
                             st.info(
-                                f"**Overflow base auto-created: `{ov_label}`**  \n"
+                                f"**Overflow base in use: `{current_label}`**  \n"
                                 f"{overflow_created} domain(s) pushed there because `{push_target_label}` was full.  \n"
-                                f"It will be automatically included in duplicate checks from the next session onwards."
+                                f"It's checked for duplicates automatically."
                             )
 
                         if errors > 0 and error_details:
