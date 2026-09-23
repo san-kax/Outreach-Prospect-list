@@ -1489,6 +1489,32 @@ with tab_quick:
             qc_blocked = qc_existing
             qc_safe_3m = qc_safe_6m = set()
 
+        # Persist results in session_state so they survive the rerun triggered by
+        # clicking a download_button below — st.button only returns True on the
+        # single run right after it's clicked, so without this the whole results
+        # section (and the auto-push below) would vanish on that rerun.
+        st.session_state["qc_last_check"] = {
+            "domains_to_check": list(domains_to_check),
+            "qc_blocked": qc_blocked,
+            "qc_safe_3m": qc_safe_3m,
+            "qc_safe_6m": qc_safe_6m,
+            "qc_d2s": qc_d2s,
+            "qc_dates": qc_dates,
+            "qc_addedby": qc_addedby or {},
+            "qc_critical_errors": qc_critical_errors,
+        }
+
+    qc_state = st.session_state.get("qc_last_check")
+    if qc_state:
+        domains_to_check = qc_state["domains_to_check"]
+        qc_blocked = qc_state["qc_blocked"]
+        qc_safe_3m = qc_state["qc_safe_3m"]
+        qc_safe_6m = qc_state["qc_safe_6m"]
+        qc_d2s = qc_state["qc_d2s"]
+        qc_dates = qc_state["qc_dates"]
+        qc_addedby = qc_state["qc_addedby"]
+        qc_critical_errors = qc_state["qc_critical_errors"]
+
         st.markdown("---")
         st.subheader(f"Results — {len(domains_to_check)} domain{'s' if len(domains_to_check) != 1 else ''} checked")
 
