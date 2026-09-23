@@ -1501,6 +1501,9 @@ with tab_quick:
                 "or the disavow list. Fix the Airtable token access and try again."
             )
 
+        qc_safe_norms: list[str] = []
+        qc_blocked_norms: list[str] = []
+
         for raw_input in domains_to_check:
             norm = normalize_domain(raw_input)
             if not norm:
@@ -1508,12 +1511,14 @@ with tab_quick:
                 continue
 
             if norm in qc_blocked:
+                qc_blocked_norms.append(norm)
                 df_detail = build_blocked_details(
                     [norm], qc_d2s, qc_dates, qc_addedby or {}, user_name,
                 )
                 st.error(f"🚫 **{norm}** — BLOCKED")
                 st.dataframe(df_detail, use_container_width=True, hide_index=True)
             else:
+                qc_safe_norms.append(norm)
                 if norm in qc_safe_6m:
                     if is_agency:
                         reason = f"Rule 2 (Agency): live link confirmed before {AGENCY_LIVE_LINK_CUTOFF.strftime('%d %b %Y')} — safe to re-outreach"
@@ -1525,6 +1530,45 @@ with tab_quick:
                     reason = "Brand new — not found in any source"
                 st.success(f"✅ **{norm}** — Safe to outreach")
                 st.caption(f"↳ {reason}")
+
+        # ---- Downloads for this check ----
+        if qc_safe_norms or qc_blocked_norms:
+            st.markdown("---")
+            qc_df_safe = pd.DataFrame({"Domain": sorted(qc_safe_norms)})
+            qc_df_blocked = build_blocked_details(
+                sorted(qc_blocked_norms), qc_d2s, qc_dates, qc_addedby or {}, user_name,
+            )
+
+            dl_col1, dl_col2 = st.columns(2)
+            with dl_col1:
+                st.download_button(
+                    "Download Safe Domains (CSV)",
+                    qc_df_safe.to_csv(index=False),
+                    "quick_check_safe.csv",
+                    key="qc_dl_safe",
+                    disabled=not qc_safe_norms,
+                )
+            with dl_col2:
+                st.download_button(
+                    "Download Blocked Domains (CSV)",
+                    qc_df_blocked.to_csv(index=False),
+                    "quick_check_blocked.csv",
+                    key="qc_dl_blocked",
+                    disabled=not qc_blocked_norms,
+                )
+
+            qc_excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(qc_excel_buffer, engine="openpyxl") as writer:
+                qc_df_safe.to_excel(writer, sheet_name="Safe to Outreach", index=False)
+                qc_df_blocked.to_excel(writer, sheet_name="Blocked Domains", index=False)
+            qc_excel_buffer.seek(0)
+            st.download_button(
+                "📥 Download Full Report (Excel - both sheets)",
+                qc_excel_buffer,
+                "quick_check_report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="qc_dl_excel",
+            )
 
         # ---- Auto-push safe domains to Airtable ----
         safe_domains = [
